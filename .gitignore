@@ -23,7 +23,8 @@ Thumbs.db
 # 测试数据/大文件
 build/
 install/
-
+3_NPU_Yolov8_LPR_Demo/model/*.bat
+3_NPU_Yolov8_LPR_Demo/model/test*
 *dataset/
 *images/
 *imgs/
