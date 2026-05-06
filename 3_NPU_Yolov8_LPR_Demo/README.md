@@ -157,19 +157,6 @@ cd /mnt/hgfs/Yolo_LPR_RK3568_FPGA_Project/3_NPU_Yolov8_LPR_Demo
 export GCC_COMPILER=<GCC_COMPILER_PATH> #配置好后可省略
 ./build-linux.sh -t rk3568 -a aarch64 -d yolov8_lpr
 ```
-*参数说明:*
-- `<GCC_COMPILER_PATH>`: 指定交叉编译路径。不同的系统架构，所用的交叉编译工具并不相同。
-    - `GCC_COMPILE_PATH` 示例:
-        - aarch64: ~/tools/cross_compiler/arm/gcc-linaro-6.3.1-2017.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu
-        - armhf: ~/tools/cross_compiler/arm/gcc-arm-8.3-2019.03-x86_64-arm-linux-gnueabihf/bin/arm-linux-gnueabihf
-        - armhf-uclibcgnueabihf(RV1103/RV1106): ~/tools/cross_compiler/arm/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf
-- `<TARGET_PLATFORM>`: 指定目标平台。例如：`rk3588`。**注：每个模型当前支持的目标平台可能有所不同，请参考具体模型目录下的`README.md`文档。**
-- `<ARCH>`: 指定系统架构。可以在目标设备执行如下命令查询系统架构: 
-  ```shell
-  # Query architecture. For Linux, ['aarch64' or 'armhf'] should shown in log.
-  adb shell cat /proc/version
-  ```
-- `model_name`: 模型名，即examples目录下各个模型所在的文件夹名。
 
 ## Push demo files to device
 
@@ -183,11 +170,19 @@ adb push install/rk356x_linux_aarch64/rknn_yolov8_lpr_demo /userdata/
 adb push install/rk356x_linux_aarch64/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo /userdata/rknn_yolov8_lpr_demo
 adb push install/rk356x_linux_aarch64/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo /userdata/rknn_yolov8_lpr_demo
 
-adb push model/testXX.jpg /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo/test
-adb push model/testvideoXX.h264 /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo/test
+adb push model/testX.jpg /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo/test
+adb push model/testvideoX.h264 /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo/test
 ```
 
 ## Run demo and pull result
+
+```shell
+# 切到命令行模式，立刻关闭3568桌面
+sudo systemctl isolate multi-user.target
+# 恢复桌面
+sudo systemctl set-default graphical.target
+sudo reboot
+```
 
 ```shell
 #从终端使用
@@ -204,18 +199,18 @@ for img in ./test/test{1..4}.jpg; do ./yolov8_lpr_picture_demo ./model/yolov8.rk
 
 #推理视频
 cd /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo
-./yolov8_lpr_video_demo ./model/yolov8.rknn ./model/lprnet7repair_i8.rknn ./model/lprnet8repair_i8.rknn ./test/testvideo1.h264 200
+./yolov8_lpr_video_demo ./model/yolov8.rknn ./model/lprnet7repair_i8.rknn ./model/lprnet8repair_i8.rknn ./test/testvideo.h264 0
 
 #退出板端终端命令为logout
 
 #主终端使用
 #拉取结果
-adb pull /userdata/rknn_yolov8_lpr_demo/result ./
-adb pull /userdata/rknn_yolov8_lpr_demo/result ./ ; adb pull /userdata/rknn_yolov8_lpr_demo/testvideo1.h264 ./
+adb pull /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo/result ./result/picture
+adb pull /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo/result ./result/video
 ```
 
 ```shell
-#性能耗时评估
+#图片推理性能耗时评估
 
 #从终端使用
 export RKNN_LOG_LEVEL=4
@@ -225,7 +220,7 @@ export RKNN_LOG_LEVEL=0
 cd /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo
 ./yolov8_lpr_picture_demo ./model/yolov8.rknn ./model/lprnet7repair_i8.rknn ./model/lprnet8repair_i8.rknn ./test/test2.jpg > rknn_perf2repair_i8.log 2>&1
 #主终端使用
-adb pull /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo/result ./ ; adb pull /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo/rknn_perf2repair_i8.log ./
+adb pull /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo/result ./result/picture ; adb pull /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo/rknn_perf2repair_i8.log ./result/log
 ```
 
 ## 性能监控

@@ -21,6 +21,9 @@ ENV/
 Thumbs.db
 
 # 测试数据/大文件
+build/
+install/
+
 *dataset/
 *images/
 *imgs/

@@ -7,14 +7,31 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
-
+#include <errno.h>
 #include "xf86drm.h"
 #include "drm.h"
 #include "drm_mode.h"
 #include "drm_fourcc.h"
 
 #include "image_utils.h"
+#include <linux/types.h>
 
+#ifndef DMA_BUF_IOCTL_SYNC
+
+struct dma_buf_sync {
+    __u64 flags;
+};
+
+#define DMA_BUF_SYNC_READ      (1 << 0)
+#define DMA_BUF_SYNC_WRITE     (2 << 0)
+#define DMA_BUF_SYNC_RW        (DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE)
+#define DMA_BUF_SYNC_START     (0 << 2)
+#define DMA_BUF_SYNC_END       (1 << 2)
+
+#define DMA_BUF_BASE           'b'
+#define DMA_BUF_IOCTL_SYNC     _IOW(DMA_BUF_BASE, 0, struct dma_buf_sync)
+
+#endif
 struct DrmCrtcState {
     drm_mode_crtc crtc;
     uint32_t conn_id = 0;
@@ -345,12 +362,41 @@ int drm_display_present(DrmDisplay* disp, const image_buffer_t* src) {
     dst.width = disp->mode_width;
     dst.height = disp->mode_height;
     
-    // bpp=32意味着每个像素4字节。RGA 要求传入像素 stride
     dst.width_stride = disp->pitch / 4; 
     dst.height_stride = disp->mode_height;
     dst.format = IMAGE_FORMAT_RGBA8888; 
     dst.fd = disp->dmabuf_fd;
-    return convert_image_with_letterbox((image_buffer_t*)src, &dst, NULL, 0);
+
+    int dst_size = disp->pitch * disp->mode_height;
+    dst.virt_addr = (uint8_t*)mmap(NULL, dst_size, PROT_READ | PROT_WRITE, MAP_SHARED, disp->dmabuf_fd, 0);
+    
+    if (dst.virt_addr == MAP_FAILED) {
+        printf("drm_display_present: mmap failed, errno: %d\n", errno);
+        return -1;
+    }
+
+    // 1. CPU 访问前：通知内核准备写入，如果必要会使缓存失效 (Invalidate)
+    struct dma_buf_sync sync_start;
+    sync_start.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE;
+    if (ioctl(disp->dmabuf_fd, DMA_BUF_IOCTL_SYNC, &sync_start) < 0) {
+        printf("DMA_BUF_SYNC_START failed\n");
+    }
+
+    image_buffer_t aligned_src = *src;
+    aligned_src.width_stride = (aligned_src.width + 3) & ~3; 
+    int ret = convert_image_with_letterbox(&aligned_src, &dst, NULL, 0);
+
+    // 2. CPU 访问后：通知内核写入完成，强制将 CPU Cache 刷新到物理内存 DDR (Flush)
+    struct dma_buf_sync sync_end;
+    sync_end.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
+    if (ioctl(disp->dmabuf_fd, DMA_BUF_IOCTL_SYNC, &sync_end) < 0) {
+        printf("DMA_BUF_SYNC_END failed\n");
+    }
+
+    munmap(dst.virt_addr, dst_size);
+    dst.virt_addr = NULL;
+
+    return ret;
 }
 
 int drm_display_present_NV12(DrmDisplay* disp, const image_buffer_t* src) {
