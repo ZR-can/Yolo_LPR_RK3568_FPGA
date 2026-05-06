@@ -1,0 +1,16 @@
+ultralytics>=8.2.0
+opencv-python>=4.8.0
+numpy>=1.24.0,<2.0.0
+Pillow>=10.0.0
+matplotlib>=3.3.0
+pandas>=1.1.0
+scipy>=1.10.0
+imutils>=0.5.4
+tqdm>=4.66.0
+onnx>=1.14.0
+onnxruntime-gpu>=1.15.0
+pybaseutils>=1.0.0
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.1.0
+torchvision==0.16.0
+torchaudio==2.1.0

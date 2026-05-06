@@ -1,0 +1,36 @@
+# Python 编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# 编辑器配置
+.idea/
+.vscode/
+*.swp
+*.sublime-*
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 测试数据/大文件
+*dataset/
+*images/
+*imgs/
+*videos/
+1_PC_Training/datasets/
+1_PC_Training/LPRNet_Pytorch/data
+1_PC_Training/scripts/runs/test_results/val/labels
+relate
+rknn
+2_Model_Conversion_PC_Simulation/ultralytics_yolov8
+3_NPU_Yolov8_LPR_Demo/result
+yolo_-lprnet_-pytorch-master

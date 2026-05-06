@@ -1,0 +1,36 @@
+# YOLOv8配置文件 - 车牌检测
+
+# 数据集配置
+path: D:\Yolo_LPR_RK3568_FPGA_Project\1_PC_Training\datasets\yolo_format  # 数据集根目录
+train: images/train  # 训练集图片相对路径（根目录下的子路径）
+val: images/val      # 验证集图片相对路径（根目录下的子路径）
+test: images/test    # 测试集图片相对路径（根目录下的子路径）
+
+# 类别配置
+names:
+  0: blue
+  1: green
+  2: yellow_single
+  3: other
+
+# 模型配置
+nc: 4  # 类别数量
+width: 640  # 输入图像宽度
+height: 640  # 输入图像高度
+
+# 训练参数
+batch: 16  # 批次大小
+epochs: 50  # 训练轮数
+imgsz: [640, 640]  # 图像大小
+optimizer: SGD  # 优化器
+lr0: 0.001  # 初始学习率
+weight_decay: 0.0005  # 权重衰减
+momentum: 0.937  # 动量
+cache: True # 是否使用缓存加速数据加载
+pretrained: True  # 使用预训练权重，提升模型性能和收敛速度
+amp: True  # 开启自动混合精度训练
+workers: 8  # 数据加载进程数高
+patience: 30  # 早停机制：验证集性能30轮不提升就自动停止，节省训练时间
+cos_lr: True  # 开启余弦退火学习率，动态调整学习率，微调收敛更稳定
+cls_pw: 0.8  # 利用类权重功能，通过反向类频率处理类不平衡问题
+cls: 1.5 # 分类损失在总损失函数中的权重

@@ -1,0 +1,71 @@
+加载测试模型成功:  D:\Yolo_LPR_RK3568_FPGA_Project\1_PC_Training\LPRNet_Pytorch\weights\7char\LPRNet_7char_20260425124555.pth
+正在准备测试数据集： D:\Yolo_LPR_RK3568_FPGA_Project\1_PC_Training\datasets\yolo_lprnet_crops\blue\test
+LPRDataLoader微调模式：图片尺寸 [94, 24] 车牌最大长度 8
+-> 总数据量(为训练集时包含过采样扩充): 1404 张
+[信息] 长度错误汇总（真实长度 -> 预测长度: 次数）
+[长度统计] 7 -> 6: 53
+[长度统计] 7 -> 8: 21
+[长度统计] 7 -> 5: 6
+[长度统计] 7 -> 4: 2
+[长度统计] 7 -> 3: 2
+[长度统计] 7 -> 9: 1
+[信息] 测试准确率: 0.9014285714285715 [1262:85:53:1400]
+[信息] 测试速度: 0.0009415963096836014秒 1/1404]
+
+加载测试模型成功:  D:\Yolo_LPR_RK3568_FPGA_Project\1_PC_Training\LPRNet_Pytorch\weights\7char\LPRNet_7char_20260425124555.pth
+正在准备测试数据集： D:\Yolo_LPR_RK3568_FPGA_Project\1_PC_Training\datasets\lprnet_7char\lprnet_7char_tight_val
+LPRDataLoader微调模式：图片尺寸 [94, 24] 车牌最大长度 8
+-> 总数据量(为训练集时包含过采样扩充): 7850 张
+[信息] 长度错误汇总（真实长度 -> 预测长度: 次数）
+[长度统计] 7 -> 6: 94
+[长度统计] 7 -> 8: 79
+[长度统计] 7 -> 5: 21
+[长度统计] 7 -> 4: 4
+[长度统计] 7 -> 3: 3
+[长度统计] 7 -> 10: 2
+[长度统计] 7 -> 9: 2
+[信息] 测试准确率: 0.9411989795918367 [7379:205:256:7840]
+[信息] 测试速度: 0.00035442783574389806秒 1/7850]
+
+加载测试模型成功:  D:\Yolo_LPR_RK3568_FPGA_Project\1_PC_Training\LPRNet_Pytorch\weights\7char\LPRNet_7char_20260425124555.pth
+正在准备测试数据集： D:\Yolo_LPR_RK3568_FPGA_Project\1_PC_Training\datasets\lprnet_7char\val
+LPRDataLoader微调模式：图片尺寸 [94, 24] 车牌最大长度 8
+-> 总数据量(为训练集时包含过采样扩充): 7850 张
+[信息] 长度错误汇总（真实长度 -> 预测长度: 次数）
+[长度统计] 7 -> 8: 166
+[长度统计] 7 -> 6: 131
+[长度统计] 7 -> 9: 13
+[长度统计] 7 -> 5: 12
+[长度统计] 7 -> 4: 3
+[长度统计] 7 -> 10: 1
+[信息] 测试准确率: 0.9082908163265306 [7121:326:393:7840]
+[信息] 测试速度: 0.0003895360193434794秒 1/7850]
+
+加载测试模型成功:  D:\Yolo_LPR_RK3568_FPGA_Project\1_PC_Training\LPRNet_Pytorch\weights\7char\LPRNet_7char_20260425124555.pth
+正在准备测试数据集： D:\Yolo_LPR_RK3568_FPGA_Project\1_PC_Training\LPRNet_Pytorch\data\blue_test_resized
+LPRDataLoader微调模式：图片尺寸 [94, 24] 车牌最大长度 8
+-> 总数据量(为训练集时包含过采样扩充): 1000 张
+[信息] 长度错误汇总（真实长度 -> 预测长度: 次数）
+[长度统计] 7 -> 6: 40
+[长度统计] 7 -> 8: 26
+[长度统计] 7 -> 5: 8
+[长度统计] 7 -> 3: 1
+[长度统计] 7 -> 9: 1
+[长度统计] 7 -> 4: 1
+[长度统计] 7 -> 2: 1
+[信息] 测试准确率: 0.86 [860:78:62:1000]
+[信息] 测试速度: 0.000868412733078003秒 1/1000]
+
+加载测试模型成功:  D:\Yolo_LPR_RK3568_FPGA_Project\1_PC_Training\LPRNet_Pytorch\weights\7char\LPRNet_7char_20260425124555.pth
+正在准备测试数据集： D:\Yolo_LPR_RK3568_FPGA_Project\1_PC_Training\LPRNet_Pytorch\data\blue_train_resized
+LPRDataLoader微调模式：图片尺寸 [94, 24] 车牌最大长度 8
+-> 总数据量(为训练集时包含过采样扩充): 2594 张
+[信息] 长度错误汇总（真实长度 -> 预测长度: 次数）
+[长度统计] 7 -> 6: 180
+[长度统计] 7 -> 8: 102
+[长度统计] 7 -> 5: 13
+[长度统计] 7 -> 4: 4
+[长度统计] 7 -> 3: 3
+[长度统计] 7 -> 9: 1
+[信息] 测试准确率: 0.7401544401544402 [1917:303:370:2590]
+[信息] 测试速度: 0.0005625617807428012秒 1/2594]
