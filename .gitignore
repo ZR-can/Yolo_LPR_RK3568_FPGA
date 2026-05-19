@@ -25,6 +25,8 @@ build/
 install/
 3_NPU_Yolov8_LPR_Demo/model/*.bat
 3_NPU_Yolov8_LPR_Demo/model/test*
+3_NPU_Yolov8_LPR_Demo/*.log
+3_NPU_Yolov8_LPR_Demo/**/*.log
 *dataset/
 *images/
 *imgs/
