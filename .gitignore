@@ -20,6 +20,9 @@ ENV/
 .DS_Store
 Thumbs.db
 
+# Codex workspace instructions
+AGENTS.md
+
 # 测试数据/大文件
 build/
 install/

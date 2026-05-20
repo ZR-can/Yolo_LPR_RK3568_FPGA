@@ -1,6 +1,11 @@
 
 # 3_NPU_Yolov8_LPR_Demo用法
 
+## 当前状态
+
+当前主线实现的是 RK3568 端的视频解码、RGA 预处理、YOLOv8n 车牌定位、LPRNet 字符识别和双线程显示。
+FPGA 侧的 PCIe 预处理链路仍在后续开发阶段，当前 README 不把这部分视为已完成能力。
+
 ## 文件构成介绍
 
 ```
@@ -150,12 +155,19 @@
 **这里可以将路径写入Linux的环境变量，这样以后每次编译则不用再运行export GCC_COMPILER=<GCC_COMPILER_PATH>命令，例如我的写入/home/zr/gcc-linaro-6.3.1-2017.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu**
 
 ## Compile and Build
-以下的命令均以Linux的为例，可直接复制使用。  
+以下的命令均以Linux的为例，可直接复制使用。 
 建议开两个终端，一个主终端：在/mnt/hgfs/Yolo_LPR_RK3568_FPGA_Project/3_NPU_Yolov8_LPR_Demo交叉编译用，一个从终端：专门登入板端
 ```shell
 cd /mnt/hgfs/Yolo_LPR_RK3568_FPGA_Project/3_NPU_Yolov8_LPR_Demo
 export GCC_COMPILER=<GCC_COMPILER_PATH> #配置好后可省略
 ./build-linux.sh -t rk3568 -a aarch64 -d yolov8_lpr
+```
+
+如果希望一键完成“清理旧 build、重新编译、推送到板端并恢复可执行权限”，可直接使用：
+
+```shell
+cd /mnt/hgfs/Yolo_LPR_RK3568_FPGA_Project/3_NPU_Yolov8_LPR_Demo
+./build_and_push.sh
 ```
 
 ## Push demo files to device
@@ -282,4 +294,3 @@ echo '--- [内存占用 (MB)] ---'
 free -m
 "
 ```
-
