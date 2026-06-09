@@ -4,15 +4,13 @@ CFLAGS  += -g -Wall -O2 $(INCLUDE)
 LIBS    +=
 LDFLAGS :=
 CXXFLAGS:= $(CFLAGS)
-SOURCE  := $(wildcard *.c) $(wildcard *.cpp)
-OBJS    := $(patsubst %.c,%.o,$(patsubst %.cpp,%.o,$(SOURCE)))
-TARGET  := dma_memcpy_demo
+TARGETS := dma_memcpy_demo rk_fpga_pcie_comm_demo
 
 .PHONY : everything objs clean distclean rebuild
 
-all : $(TARGET)
+all : $(TARGETS)
 
-objs : $(OBJS)
+objs : mes_dma_memcpy_demo.o rk_fpga_pcie_comm_demo.o
 
 rebuild: distclean all
 
@@ -21,7 +19,13 @@ clean :
 	rm -rf *.o
 
 distclean : clean
-	rm -rf $(TARGET)
+	rm -rf $(TARGETS)
 
-$(TARGET) : $(OBJS)
-	$(CC) $(CXXFLAGS) -o $@ $(OBJS) $(LDFLAGS) $(LIBS)
+dma_memcpy_demo : mes_dma_memcpy_demo.o
+	$(CC) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
+
+rk_fpga_pcie_comm_demo : rk_fpga_pcie_comm_demo.o
+	$(CC) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
+
+%.o : %.c
+	$(CC) $(CFLAGS) -c -o $@ $<

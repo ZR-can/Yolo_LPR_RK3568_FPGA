@@ -1,0 +1,37 @@
+# PDS generated output directories
+/compile/
+/constraint_check/
+/device_map/
+/generate_bitstream/
+/ip_backup/
+/log/
+/logbackup/
+/place_route/
+/report_timing/
+/synthesize/
+
+# PDS and simulator transient files
+.last_generated
+.settings
+*.adf
+*.bak
+*.bgr
+*.cmr
+*.db
+*.dmr
+*.jou
+*.lock
+*.log
+*.netlist
+*.prr
+*.prt
+*.rpt
+*.rtr
+*.sbit
+*.sfc
+*.smsk
+*.snr
+*.tmp
+transcript
+vsim.wlf
+work/
