@@ -131,6 +131,22 @@ static image_format_t map_mpp_format(int format) {
 
 // 视频写出初始化与处理
 // ==================== 推理子线程 ====================
+// YOLOLPRPipelineContext pipeline_ctx->rknn_app_context_t yolo_ctx->rknn_context rknn_ctx 
+// 核心yolo推理函数rknn_run(yolo_ctx->rknn_ctx, nullptr)
+/*typedef struct {
+    rknn_context rknn_ctx;
+    rknn_input_output_num io_num;
+  
+    rknn_tensor_mem* input_mems[1];
+    rknn_tensor_mem* output_mems[9];
+    rknn_tensor_attr* input_native_attrs;
+    rknn_tensor_attr* output_native_attrs;
+
+    int model_channel;
+    int model_width;
+    int model_height;
+    bool is_quant;
+} rknn_app_context_t;*/
 static void inference_thread_func(FrameProcessContext* ctx) {
     printf("[Infer Thread] Started.\n");
     int last_frame_id = -1;
@@ -158,7 +174,7 @@ static void inference_thread_func(FrameProcessContext* ctx) {
             ctx->yolo_input_busy[buf_index] = false;
             continue;
         }
-
+        
         rknn_tensor_mem* input_mem = ctx->yolo_input_mems[buf_index];
         if (input_mem == NULL) {
             ctx->yolo_input_busy[buf_index] = false;

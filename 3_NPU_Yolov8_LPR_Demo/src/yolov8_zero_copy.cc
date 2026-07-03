@@ -348,7 +348,7 @@ int inference_yolov8_model_preprocessed(rknn_app_context_t *app_ctx, object_dete
     letter_box.y_pad = 0;
 
     printf("rknn_run\n");
-    ret = rknn_run(app_ctx->rknn_ctx, nullptr);
+    ret = rknn_run(app_ctx->rknn_ctx, nullptr); // rknn_run:YOLOLPRPipelineContext pipeline_ctx->rknn_app_context_t yolo_ctx->rknn_context rknn_ctx 
     if (ret < 0) {
         printf("rknn_run fail! ret=%d\n", ret);
         return -1;
