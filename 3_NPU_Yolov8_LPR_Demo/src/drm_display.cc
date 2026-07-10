@@ -1,455 +1,690 @@
 #include "drm_display.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/mman.h>
 #include <sys/ioctl.h>
-#include <errno.h>
-#include "xf86drm.h"
+#include <unistd.h>
+
+#include <algorithm>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
 #include "drm.h"
-#include "drm_mode.h"
 #include "drm_fourcc.h"
-
+#include "drm_mode.h"
 #include "image_utils.h"
-#include <linux/types.h>
 
-#ifndef DMA_BUF_IOCTL_SYNC
+namespace {
 
-struct dma_buf_sync {
-    __u64 flags;
-};
+constexpr uint32_t kDrmModeConnected = 1;
+constexpr uint32_t kUiFormat = DRM_FORMAT_ABGR8888;
 
-#define DMA_BUF_SYNC_READ      (1 << 0)
-#define DMA_BUF_SYNC_WRITE     (2 << 0)
-#define DMA_BUF_SYNC_RW        (DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE)
-#define DMA_BUF_SYNC_START     (0 << 2)
-#define DMA_BUF_SYNC_END       (1 << 2)
-
-#define DMA_BUF_BASE           'b'
-#define DMA_BUF_IOCTL_SYNC     _IOW(DMA_BUF_BASE, 0, struct dma_buf_sync)
-
-#endif
 struct DrmCrtcState {
-    drm_mode_crtc crtc;
+    drm_mode_crtc crtc{};
     uint32_t conn_id = 0;
-    int valid = 0;
+    bool valid = false;
 };
 
-static const uint32_t DRM_MODE_CONNECTED = 1;
+struct DumbBuffer {
+    uint32_t handle = 0;
+    uint32_t fb_id = 0;
+    uint32_t pitch = 0;
+    size_t size = 0;
+    int dmabuf_fd = -1;
+};
 
-static int drm_get_resources(int fd, drm_mode_card_res* res,
-                             uint32_t** conn_ids, uint32_t** crtc_ids, uint32_t** enc_ids) {
-    memset(res, 0, sizeof(*res));
-    if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, res) != 0) {
-        return -1;
+struct VideoFramebuffer {
+    int dmabuf_fd = -1;
+    int width = 0;
+    int height = 0;
+    uint32_t stride = 0;
+    uint32_t height_stride = 0;
+    uint32_t fourcc = 0;
+    uint32_t fb_id = 0;
+    uint32_t handle = 0;
+};
+
+struct PlaneProperties {
+    uint32_t id = 0;
+    std::unordered_map<std::string, uint32_t> property_ids;
+};
+
+struct AtomicRequest {
+    std::vector<uint32_t> object_ids;
+    std::vector<uint32_t> property_counts;
+    std::vector<uint32_t> property_ids;
+    std::vector<uint64_t> property_values;
+
+    void Add(uint32_t object_id, uint32_t property_id, uint64_t value) {
+        if (property_id == 0) {
+            return;
+        }
+        size_t object_index = 0;
+        while (object_index < object_ids.size() && object_ids[object_index] != object_id) {
+            ++object_index;
+        }
+        if (object_index == object_ids.size()) {
+            object_ids.push_back(object_id);
+            property_counts.push_back(0);
+        }
+        ++property_counts[object_index];
+        property_ids.push_back(property_id);
+        property_values.push_back(value);
     }
+};
 
-    *conn_ids = (uint32_t*)calloc(res->count_connectors, sizeof(uint32_t));
-    *crtc_ids = (uint32_t*)calloc(res->count_crtcs, sizeof(uint32_t));
-    *enc_ids = (uint32_t*)calloc(res->count_encoders, sizeof(uint32_t));
-    if (!*conn_ids || !*crtc_ids || !*enc_ids) {
-        return -1;
-    }
+struct DrmAtomicState {
+    drm_mode_modeinfo mode{};
+    uint32_t mode_blob_id = 0;
+    PlaneProperties video_plane;
+    PlaneProperties ui_plane;
+    PlaneProperties crtc;
+    PlaneProperties connector;
+    DumbBuffer ui_buffers[2];
+    std::vector<VideoFramebuffer> video_framebuffers;
+    int current_ui_index = -1;
+    int write_ui_index = 0;
+    bool initialized = false;
+};
 
-    res->connector_id_ptr = (uint64_t)(uintptr_t)(*conn_ids);
-    res->crtc_id_ptr = (uint64_t)(uintptr_t)(*crtc_ids);
-    res->encoder_id_ptr = (uint64_t)(uintptr_t)(*enc_ids);
-    res->count_fbs = 0;
-    res->fb_id_ptr = 0;
-
-    if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, res) != 0) {
-        return -1;
-    }
-    return 0;
+uint32_t GetPropertyId(const PlaneProperties& object, const char* name) {
+    const auto found = object.property_ids.find(name);
+    return found == object.property_ids.end() ? 0 : found->second;
 }
 
-static int drm_get_connector(int fd, uint32_t conn_id, drm_mode_get_connector* conn,
-                             drm_mode_modeinfo** modes, uint32_t** encoders) {
-    memset(conn, 0, sizeof(*conn));
-    conn->connector_id = conn_id;
-    
-    if (ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, conn) != 0) {
+int GetResources(int fd, drm_mode_card_res* resources, std::vector<uint32_t>* connectors,
+                 std::vector<uint32_t>* crtcs, std::vector<uint32_t>* encoders) {
+    memset(resources, 0, sizeof(*resources));
+    if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, resources) != 0) {
         return -1;
     }
-    if (conn->count_modes == 0) {
-        return 0;
-    }
-
-    *modes = (drm_mode_modeinfo*)calloc(conn->count_modes, sizeof(drm_mode_modeinfo));
-    *encoders = (uint32_t*)calloc(conn->count_encoders, sizeof(uint32_t));
-    if (!*modes || !*encoders) {
-        return -1;
-    }
-
-    conn->modes_ptr = (uint64_t)(uintptr_t)(*modes);
-    conn->encoders_ptr = (uint64_t)(uintptr_t)(*encoders);
-    conn->count_props = 0;
-    conn->props_ptr = 0;
-    conn->prop_values_ptr = 0;
-
-    if (ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, conn) != 0) {
-        return -1;
-    }
-    return 0;
+    connectors->resize(resources->count_connectors);
+    crtcs->resize(resources->count_crtcs);
+    encoders->resize(resources->count_encoders);
+    resources->connector_id_ptr = reinterpret_cast<uint64_t>(connectors->data());
+    resources->crtc_id_ptr = reinterpret_cast<uint64_t>(crtcs->data());
+    resources->encoder_id_ptr = reinterpret_cast<uint64_t>(encoders->data());
+    resources->count_fbs = 0;
+    resources->fb_id_ptr = 0;
+    return ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, resources) == 0 ? 0 : -1;
 }
 
-static int drm_get_encoder(int fd, uint32_t enc_id, drm_mode_get_encoder* enc) {
-    memset(enc, 0, sizeof(*enc));
-    enc->encoder_id = enc_id;
-    if (ioctl(fd, DRM_IOCTL_MODE_GETENCODER, enc) != 0) {
+int GetConnector(int fd, uint32_t connector_id, drm_mode_get_connector* connector,
+                 std::vector<drm_mode_modeinfo>* modes, std::vector<uint32_t>* encoders) {
+    memset(connector, 0, sizeof(*connector));
+    connector->connector_id = connector_id;
+    if (ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, connector) != 0 || connector->count_modes == 0) {
         return -1;
     }
-    return 0;
+    modes->resize(connector->count_modes);
+    encoders->resize(connector->count_encoders);
+    connector->modes_ptr = reinterpret_cast<uint64_t>(modes->data());
+    connector->encoders_ptr = reinterpret_cast<uint64_t>(encoders->data());
+    connector->count_props = 0;
+    connector->props_ptr = 0;
+    connector->prop_values_ptr = 0;
+    return ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, connector) == 0 ? 0 : -1;
 }
 
-static int drm_get_crtc(int fd, uint32_t crtc_id, drm_mode_crtc* crtc) {
+int GetEncoder(int fd, uint32_t encoder_id, drm_mode_get_encoder* encoder) {
+    memset(encoder, 0, sizeof(*encoder));
+    encoder->encoder_id = encoder_id;
+    return ioctl(fd, DRM_IOCTL_MODE_GETENCODER, encoder) == 0 ? 0 : -1;
+}
+
+int GetCrtc(int fd, uint32_t crtc_id, drm_mode_crtc* crtc) {
     memset(crtc, 0, sizeof(*crtc));
     crtc->crtc_id = crtc_id;
-    if (ioctl(fd, DRM_IOCTL_MODE_GETCRTC, crtc) != 0) {
-        return -1;
-    }
-    return 0;
+    return ioctl(fd, DRM_IOCTL_MODE_GETCRTC, crtc) == 0 ? 0 : -1;
 }
 
-static int drm_set_crtc(int fd, drm_mode_crtc* crtc) {
-    if (ioctl(fd, DRM_IOCTL_MODE_SETCRTC, crtc) != 0) {
+int PickConnector(int fd, int requested_width, int requested_height, uint32_t* connector_id,
+                  uint32_t* crtc_id, int* crtc_index, drm_mode_modeinfo* mode) {
+    drm_mode_card_res resources{};
+    std::vector<uint32_t> connectors;
+    std::vector<uint32_t> crtcs;
+    std::vector<uint32_t> encoders;
+    if (GetResources(fd, &resources, &connectors, &crtcs, &encoders) != 0) {
         return -1;
     }
-    return 0;
-}
 
-static int drm_add_fb2(int fd, drm_mode_fb_cmd2* cmd) {
-    if (ioctl(fd, DRM_IOCTL_MODE_ADDFB2, cmd) != 0) {
-        return -1;
-    }
-    return 0;
-}
-
-static int drm_pick_connector(int fd, uint32_t* conn_id, drm_mode_modeinfo* mode, uint32_t* crtc_id,
-                              int want_width, int want_height) {
-    drm_mode_card_res res;
-    uint32_t* conn_ids = nullptr;
-    uint32_t* crtc_ids = nullptr;
-    uint32_t* enc_ids = nullptr;
-
-    printf("DRM: Calling drm_get_resources...\n");
-    if (drm_get_resources(fd, &res, &conn_ids, &crtc_ids, &enc_ids) != 0) {
-        printf("DRM: drm_get_resources failed! Not a display device or permission denied.\n");
-        return -1;
-    }
-    
-    printf("DRM: Found %d connectors, %d CRTCs, %d encoders\n", 
-           res.count_connectors, res.count_crtcs, res.count_encoders);
-
-    int ret = -1;
-    for (uint32_t i = 0; i < res.count_connectors; ++i) {
-        drm_mode_get_connector conn;
-        drm_mode_modeinfo* modes = nullptr;
-        uint32_t* encoders = nullptr;
-
-        if (drm_get_connector(fd, conn_ids[i], &conn, &modes, &encoders) != 0) {
-            printf("DRM: Failed to get connector properties for ID %d\n", conn_ids[i]);
-            free(modes); free(encoders);
+    for (uint32_t candidate : connectors) {
+        drm_mode_get_connector connector{};
+        std::vector<drm_mode_modeinfo> modes;
+        std::vector<uint32_t> connector_encoders;
+        if (GetConnector(fd, candidate, &connector, &modes, &connector_encoders) != 0 ||
+            connector.connection != kDrmModeConnected) {
             continue;
         }
 
-        printf("DRM: Connector ID %d | Type: %d | Connection Status: %d | Modes count: %d\n",
-               conn.connector_id, conn.connector_type, conn.connection, conn.count_modes);
-
-        if (conn.connection != DRM_MODE_CONNECTED || conn.count_modes == 0) {
-            printf("DRM: Skipping Connector ID %d (Not connected or no modes)\n", conn.connector_id);
-            free(modes); free(encoders);
-            continue;
-        }
-
-        if (conn.connector_type != DRM_MODE_CONNECTOR_HDMIA) {
-            printf("DRM: Skipping Connector ID %d (Type %d is not HDMI)\n", conn.connector_id, conn.connector_type);
-            free(modes); free(encoders);
-            continue;
-        }
-
-        printf("DRM: SUCCESS! Found connected HDMI Connector ID %d\n", conn.connector_id);
-        *conn_id = conn.connector_id;
-        *mode = modes[0];
-        
-        // 寻找最接近目标分辨率的 mode
-        for (uint32_t m = 0; m < conn.count_modes; ++m) {
-            if (modes[m].hdisplay == want_width && modes[m].vdisplay == want_height) {
-                *mode = modes[m];
+        int selected_crtc_index = -1;
+        for (uint32_t encoder_id : connector_encoders) {
+            drm_mode_get_encoder encoder{};
+            if (GetEncoder(fd, encoder_id, &encoder) != 0) {
+                continue;
+            }
+            for (size_t index = 0; index < crtcs.size(); ++index) {
+                if (encoder.possible_crtcs & (1U << index)) {
+                    selected_crtc_index = static_cast<int>(index);
+                    break;
+                }
+            }
+            if (selected_crtc_index >= 0) {
                 break;
             }
         }
-        
- 
-        int crtc_found = 0;
-        *crtc_id = 0;
+        if (selected_crtc_index < 0) {
+            continue;
+        }
 
-        for (uint32_t e = 0; e < conn.count_encoders; ++e) {
-            drm_mode_get_encoder enc;
-            if (drm_get_encoder(fd, encoders[e], &enc) == 0) {
-                for (uint32_t c = 0; c < res.count_crtcs; ++c) {
-                    if (enc.possible_crtcs & (1 << c)) {
-                        *crtc_id = crtc_ids[c];
-                        crtc_found = 1;
-                        printf("DRM: Found compatible CRTC ID %d via possible_crtcs\n", *crtc_id);
-                        break;
-                    }
-                }
+        *mode = modes.front();
+        for (const drm_mode_modeinfo& candidate_mode : modes) {
+            if (candidate_mode.hdisplay == requested_width && candidate_mode.vdisplay == requested_height) {
+                *mode = candidate_mode;
+                break;
             }
-            if (crtc_found) break;
         }
-
-        if (!crtc_found && res.count_crtcs > 0) {
-            *crtc_id = crtc_ids[0];
-            printf("DRM: WARNING - No proper routing found, falling back to CRTC %d\n", *crtc_id);
-        }
-
-        free(modes);
-        free(encoders);
-        ret = 0;
-        break;
+        *connector_id = connector.connector_id;
+        *crtc_index = selected_crtc_index;
+        *crtc_id = crtcs[selected_crtc_index];
+        return 0;
     }
-
-    free(conn_ids);
-    free(crtc_ids);
-    free(enc_ids);
-    return ret;
+    return -1;
 }
 
-static int drm_try_open_card(DrmDisplay* disp, const char* path, int width, int height, drm_mode_modeinfo* mode) {
-    printf("DRM: -------- Trying to open %s --------\n", path);
-    disp->drm_fd = open(path, O_RDWR | O_CLOEXEC);
-    if (disp->drm_fd < 0) {
-        printf("DRM: Failed to open %s\n", path);
+int EnableAtomicCapabilities(int fd) {
+    drm_set_client_cap cap{};
+    cap.capability = DRM_CLIENT_CAP_ATOMIC;
+    cap.value = 1;
+    if (ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, &cap) != 0) {
         return -1;
     }
-    
-    printf("DRM: Successfully opened %s (fd=%d), probing connectors...\n", path, disp->drm_fd);
-    if (drm_pick_connector(disp->drm_fd, &disp->conn_id, mode, &disp->crtc_id, width, height) != 0) {
-        printf("DRM: Probe failed for %s\n", path);
-        close(disp->drm_fd);
-        disp->drm_fd = -1;
+    cap.capability = DRM_CLIENT_CAP_UNIVERSAL_PLANES;
+    cap.value = 1;
+    return ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, &cap) == 0 ? 0 : -1;
+}
+
+int ReadProperties(int fd, uint32_t object_id, uint32_t object_type, PlaneProperties* properties) {
+    drm_mode_obj_get_properties object{};
+    object.obj_id = object_id;
+    object.obj_type = object_type;
+    if (ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &object) != 0) {
         return -1;
+    }
+    std::vector<uint32_t> property_ids(object.count_props);
+    std::vector<uint64_t> property_values(object.count_props);
+    object.props_ptr = reinterpret_cast<uint64_t>(property_ids.data());
+    object.prop_values_ptr = reinterpret_cast<uint64_t>(property_values.data());
+    if (ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &object) != 0) {
+        return -1;
+    }
+
+    properties->id = object_id;
+    properties->property_ids.clear();
+    for (uint32_t property_id : property_ids) {
+        drm_mode_get_property property{};
+        property.prop_id = property_id;
+        if (ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &property) == 0) {
+            properties->property_ids[property.name] = property_id;
+        }
     }
     return 0;
 }
 
-int drm_display_init(DrmDisplay* disp, int width, int height) {
-    if (!disp) {
+bool PlaneSupportsFormat(int fd, uint32_t plane_id, int crtc_index, uint32_t format) {
+    drm_mode_get_plane plane{};
+    plane.plane_id = plane_id;
+    if (ioctl(fd, DRM_IOCTL_MODE_GETPLANE, &plane) != 0 || (plane.possible_crtcs & (1U << crtc_index)) == 0) {
+        return false;
+    }
+    std::vector<uint32_t> formats(plane.count_format_types);
+    plane.format_type_ptr = reinterpret_cast<uint64_t>(formats.data());
+    if (ioctl(fd, DRM_IOCTL_MODE_GETPLANE, &plane) != 0) {
+        return false;
+    }
+    return std::find(formats.begin(), formats.end(), format) != formats.end();
+}
+
+int FindUiPlane(int fd, int crtc_index, DrmAtomicState* state) {
+    drm_mode_get_plane_res resources{};
+    if (ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &resources) != 0) {
+        return -1;
+    }
+    std::vector<uint32_t> plane_ids(resources.count_planes);
+    resources.plane_id_ptr = reinterpret_cast<uint64_t>(plane_ids.data());
+    if (ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &resources) != 0) {
         return -1;
     }
 
-    drm_mode_modeinfo mode;
-    memset(&mode, 0, sizeof(mode));
-    const char* cards[] = {"/dev/dri/card0", "/dev/dri/card1", "/dev/dri/card2", "/dev/dri/card3"};
-    int found = -1;
-    for (size_t i = 0; i < sizeof(cards) / sizeof(cards[0]); ++i) {
-        if (drm_try_open_card(disp, cards[i], width, height, &mode) == 0) {
-            printf("DRM: using %s\n", cards[i]);
-            found = 0;
-            break;
+    uint32_t ui_plane_id = 0;
+    for (uint32_t plane_id : plane_ids) {
+        if (ui_plane_id == 0 && PlaneSupportsFormat(fd, plane_id, crtc_index, kUiFormat)) {
+            ui_plane_id = plane_id;
         }
     }
-    if (found != 0) {
-        printf("DRM: no connected connector found\n");
+    if (ui_plane_id == 0) {
         return -1;
     }
+    return ReadProperties(fd, ui_plane_id, DRM_MODE_OBJECT_PLANE, &state->ui_plane);
+}
 
-    disp->width = width;
-    disp->height = height;
-    disp->mode_width = mode.hdisplay;
-    disp->mode_height = mode.vdisplay;
-
-    drm_mode_crtc orig;
-    if (drm_get_crtc(disp->drm_fd, disp->crtc_id, &orig) == 0) {
-        DrmCrtcState* state = new DrmCrtcState();
-        state->crtc = orig;
-        state->conn_id = disp->conn_id;
-        state->valid = 1;
-        disp->orig_crtc = state;
-    }
-
-    struct drm_mode_create_dumb create = {};
-    create.width = disp->mode_width;
-    create.height = disp->mode_height;  // 【修改】不再乘以 3/2
-    create.bpp = 32;                    // 【修改】32位真彩色，硬件兼容性 100%
-    if (ioctl(disp->drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0) {
-        perror("DRM_IOCTL_MODE_CREATE_DUMB");
-        drm_display_deinit(disp);
+int FindVideoPlane(int fd, int crtc_index, uint32_t video_format, DrmAtomicState* state) {
+    drm_mode_get_plane_res resources{};
+    if (ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &resources) != 0) {
         return -1;
     }
-
-    disp->handle = create.handle;
-    disp->pitch = create.pitch;
-    disp->size = create.size;
-
-    uint32_t handles[4] = {disp->handle, disp->handle, 0, 0};
-    uint32_t pitches[4] = {disp->pitch, disp->pitch, 0, 0};
-    uint32_t offsets[4] = {0, disp->pitch * (uint32_t)disp->mode_height, 0, 0};
-
-    drm_mode_fb_cmd2 fb_cmd;
-    memset(&fb_cmd, 0, sizeof(fb_cmd));
-    fb_cmd.width = disp->mode_width;
-    fb_cmd.height = disp->mode_height;
-    // 使用 XBGR8888，完美契合 RGA 的 RGBA8888 内存布局
-    fb_cmd.pixel_format = DRM_FORMAT_XBGR8888; 
-    fb_cmd.handles[0] = disp->handle;
-    fb_cmd.pitches[0] = disp->pitch;
-    fb_cmd.offsets[0] = 0;
-    if (drm_add_fb2(disp->drm_fd, &fb_cmd) != 0) {
-        perror("DRM_IOCTL_MODE_ADDFB2");
-        drm_display_deinit(disp);
+    std::vector<uint32_t> plane_ids(resources.count_planes);
+    resources.plane_id_ptr = reinterpret_cast<uint64_t>(plane_ids.data());
+    if (ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &resources) != 0) {
         return -1;
     }
-    disp->fb_id = fb_cmd.fb_id;
+    for (uint32_t plane_id : plane_ids) {
+        if (plane_id != state->ui_plane.id && PlaneSupportsFormat(fd, plane_id, crtc_index, video_format)) {
+            return ReadProperties(fd, plane_id, DRM_MODE_OBJECT_PLANE, &state->video_plane);
+        }
+    }
+    return -1;
+}
 
-    struct drm_mode_map_dumb map = {};
-    map.handle = disp->handle;
-    if (ioctl(disp->drm_fd, DRM_IOCTL_MODE_MAP_DUMB, &map) != 0) {
-        perror("DRM_IOCTL_MODE_MAP_DUMB");
-        drm_display_deinit(disp);
+int CreateUiBuffer(int fd, int width, int height, DumbBuffer* buffer) {
+    drm_mode_create_dumb create{};
+    create.width = width;
+    create.height = height;
+    create.bpp = 32;
+    if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0) {
         return -1;
     }
+    buffer->handle = create.handle;
+    buffer->pitch = create.pitch;
+    buffer->size = create.size;
 
-    disp->map = mmap(0, disp->size, PROT_READ | PROT_WRITE, MAP_SHARED, disp->drm_fd, map.offset);
-    if (disp->map == MAP_FAILED) {
-        disp->map = nullptr;
-        perror("mmap");
-        drm_display_deinit(disp);
+    drm_mode_fb_cmd2 fb{};
+    fb.width = width;
+    fb.height = height;
+    fb.pixel_format = kUiFormat;
+    fb.handles[0] = buffer->handle;
+    fb.pitches[0] = buffer->pitch;
+    if (ioctl(fd, DRM_IOCTL_MODE_ADDFB2, &fb) != 0) {
         return -1;
     }
+    buffer->fb_id = fb.fb_id;
 
-    drm_mode_crtc set_crtc;
-    memset(&set_crtc, 0, sizeof(set_crtc));
-    set_crtc.crtc_id = disp->crtc_id;
-    set_crtc.fb_id = disp->fb_id;
-    set_crtc.x = 0;
-    set_crtc.y = 0;
-    set_crtc.set_connectors_ptr = (uint64_t)(uintptr_t)&disp->conn_id;
-    set_crtc.count_connectors = 1;
-    set_crtc.mode_valid = 1;
-    set_crtc.mode = mode;
-    if (drm_set_crtc(disp->drm_fd, &set_crtc) != 0) {
-        perror("DRM_IOCTL_MODE_SETCRTC");
-        drm_display_deinit(disp);
-        return -1;
-    }
-
-    memset(disp->map, 0, disp->size);
-
-    struct drm_prime_handle prime = {};
-    prime.handle = disp->handle;
+    drm_prime_handle prime{};
+    prime.handle = buffer->handle;
     prime.flags = DRM_CLOEXEC | DRM_RDWR;
-    if (ioctl(disp->drm_fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &prime) != 0) {
-        perror("DRM_IOCTL_PRIME_HANDLE_TO_FD");
-        drm_display_deinit(disp);
+    if (ioctl(fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &prime) != 0) {
         return -1;
     }
-    disp->dmabuf_fd = prime.fd;
+    buffer->dmabuf_fd = prime.fd;
     return 0;
 }
 
-int drm_display_present(DrmDisplay* disp, const image_buffer_t* src) {
-    if (!disp || !src || disp->dmabuf_fd < 0) {
-        return -1;
+void DestroyUiBuffer(int fd, DumbBuffer* buffer) {
+    if (buffer->dmabuf_fd >= 0) {
+        close(buffer->dmabuf_fd);
+        buffer->dmabuf_fd = -1;
     }
-
-    image_buffer_t dst;
-    memset(&dst, 0, sizeof(dst));
-    dst.width = disp->mode_width;
-    dst.height = disp->mode_height;
-    
-    dst.width_stride = disp->pitch / 4; 
-    dst.height_stride = disp->mode_height;
-    dst.format = IMAGE_FORMAT_RGBA8888; 
-    dst.fd = disp->dmabuf_fd;
-
-    int dst_size = disp->pitch * disp->mode_height;
-    dst.virt_addr = (uint8_t*)mmap(NULL, dst_size, PROT_READ | PROT_WRITE, MAP_SHARED, disp->dmabuf_fd, 0);
-    
-    if (dst.virt_addr == MAP_FAILED) {
-        printf("drm_display_present: mmap failed, errno: %d\n", errno);
-        return -1;
+    if (buffer->fb_id != 0) {
+        ioctl(fd, DRM_IOCTL_MODE_RMFB, &buffer->fb_id);
+        buffer->fb_id = 0;
     }
-
-    // 1. CPU 访问前：通知内核准备写入，如果必要会使缓存失效 (Invalidate)
-    struct dma_buf_sync sync_start;
-    sync_start.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE;
-    if (ioctl(disp->dmabuf_fd, DMA_BUF_IOCTL_SYNC, &sync_start) < 0) {
-        printf("DMA_BUF_SYNC_START failed\n");
+    if (buffer->handle != 0) {
+        drm_mode_destroy_dumb destroy{};
+        destroy.handle = buffer->handle;
+        ioctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+        buffer->handle = 0;
     }
-
-    image_buffer_t aligned_src = *src;
-    aligned_src.width_stride = (aligned_src.width + 3) & ~3; 
-    int ret = convert_image_with_letterbox(&aligned_src, &dst, NULL, 0);
-
-    // 2. CPU 访问后：通知内核写入完成，强制将 CPU Cache 刷新到物理内存 DDR (Flush)
-    struct dma_buf_sync sync_end;
-    sync_end.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
-    if (ioctl(disp->dmabuf_fd, DMA_BUF_IOCTL_SYNC, &sync_end) < 0) {
-        printf("DMA_BUF_SYNC_END failed\n");
-    }
-
-    munmap(dst.virt_addr, dst_size);
-    dst.virt_addr = NULL;
-
-    return ret;
 }
 
-int drm_display_present_NV12(DrmDisplay* disp, const image_buffer_t* src) {
-    if (!disp || !src || disp->dmabuf_fd < 0) {
+uint32_t GetVideoFourcc(const image_buffer_t* video) {
+    if (video->format == IMAGE_FORMAT_YUV420SP_NV12) {
+        return DRM_FORMAT_NV12;
+    }
+    if (video->format == IMAGE_FORMAT_YUV420SP_NV21) {
+        return DRM_FORMAT_NV21;
+    }
+    return 0;
+}
+
+void DestroyVideoFramebuffer(int fd, VideoFramebuffer* buffer) {
+    if (buffer->fb_id != 0) {
+        ioctl(fd, DRM_IOCTL_MODE_RMFB, &buffer->fb_id);
+        buffer->fb_id = 0;
+    }
+    if (buffer->handle != 0) {
+        drm_gem_close close_handle{};
+        close_handle.handle = buffer->handle;
+        ioctl(fd, DRM_IOCTL_GEM_CLOSE, &close_handle);
+        buffer->handle = 0;
+    }
+}
+
+void DestroyVideoFramebuffers(int fd, DrmAtomicState* state) {
+    for (VideoFramebuffer& buffer : state->video_framebuffers) {
+        DestroyVideoFramebuffer(fd, &buffer);
+    }
+    state->video_framebuffers.clear();
+}
+
+bool SameVideoLayout(const VideoFramebuffer& buffer, const image_buffer_t* video, uint32_t fourcc) {
+    const uint32_t stride = video->width_stride > 0 ? static_cast<uint32_t>(video->width_stride)
+                                                     : static_cast<uint32_t>(video->width);
+    const uint32_t height_stride = video->height_stride > 0 ? static_cast<uint32_t>(video->height_stride)
+                                                             : static_cast<uint32_t>(video->height);
+    return buffer.width == video->width && buffer.height == video->height &&
+           buffer.stride == stride && buffer.height_stride == height_stride && buffer.fourcc == fourcc;
+}
+
+int ImportVideoFramebuffer(int fd, const image_buffer_t* video, uint32_t fourcc, VideoFramebuffer* buffer) {
+    if (video->fd < 0 || video->width <= 0 || video->height <= 0) {
         return -1;
     }
 
-    image_buffer_t dst;
-    memset(&dst, 0, sizeof(dst));
-    dst.width = disp->mode_width;
-    dst.height = disp->mode_height;
-    
-    // bpp=32意味着每个像素4字节。RGA 要求传入像素 stride
-    dst.width_stride = disp->pitch / 4; 
-    dst.height_stride = disp->mode_height;
-    dst.format = IMAGE_FORMAT_RGBA8888; 
-    dst.fd = disp->dmabuf_fd;
-    return convert_image((image_buffer_t*)src, &dst, NULL,NULL, 0);
+    drm_prime_handle prime{};
+    prime.fd = video->fd;
+    if (ioctl(fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &prime) != 0) {
+        return -1;
+    }
+
+    const uint32_t stride = video->width_stride > 0 ? static_cast<uint32_t>(video->width_stride)
+                                                     : static_cast<uint32_t>(video->width);
+    const uint32_t height_stride = video->height_stride > 0 ? static_cast<uint32_t>(video->height_stride)
+                                                             : static_cast<uint32_t>(video->height);
+    drm_mode_fb_cmd2 fb{};
+    fb.width = video->width;
+    fb.height = video->height;
+    fb.pixel_format = fourcc;
+    fb.handles[0] = prime.handle;
+    fb.handles[1] = prime.handle;
+    fb.pitches[0] = stride;
+    fb.pitches[1] = stride;
+    fb.offsets[1] = stride * height_stride;
+    if (ioctl(fd, DRM_IOCTL_MODE_ADDFB2, &fb) != 0) {
+        drm_gem_close close_handle{};
+        close_handle.handle = prime.handle;
+        ioctl(fd, DRM_IOCTL_GEM_CLOSE, &close_handle);
+        return -1;
+    }
+
+    buffer->dmabuf_fd = video->fd;
+    buffer->width = video->width;
+    buffer->height = video->height;
+    buffer->stride = stride;
+    buffer->height_stride = height_stride;
+    buffer->fourcc = fourcc;
+    buffer->fb_id = fb.fb_id;
+    buffer->handle = prime.handle;
+    return 0;
 }
 
-void drm_display_deinit(DrmDisplay* disp) {
-    if (!disp || disp->drm_fd < 0) {
+int GetVideoFramebuffer(int fd, DrmAtomicState* state, const image_buffer_t* video, uint32_t* fb_id) {
+    const uint32_t fourcc = GetVideoFourcc(video);
+    if (fourcc == 0) {
+        return -1;
+    }
+
+    for (const VideoFramebuffer& buffer : state->video_framebuffers) {
+        if (buffer.dmabuf_fd == video->fd && SameVideoLayout(buffer, video, fourcc)) {
+            *fb_id = buffer.fb_id;
+            return 0;
+        }
+    }
+
+    VideoFramebuffer buffer;
+    if (ImportVideoFramebuffer(fd, video, fourcc, &buffer) != 0) {
+        return -1;
+    }
+    state->video_framebuffers.push_back(buffer);
+    *fb_id = buffer.fb_id;
+    return 0;
+}
+
+void PurgeVideoFramebuffersWithOtherLayouts(int fd, DrmAtomicState* state,
+                                             const image_buffer_t* video) {
+    const uint32_t fourcc = GetVideoFourcc(video);
+    for (std::vector<VideoFramebuffer>::iterator it = state->video_framebuffers.begin();
+         it != state->video_framebuffers.end();) {
+        if (!SameVideoLayout(*it, video, fourcc)) {
+            DestroyVideoFramebuffer(fd, &(*it));
+            it = state->video_framebuffers.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void AddPlaneRequest(AtomicRequest* request, const PlaneProperties& plane, uint32_t crtc_id,
+                     uint32_t fb_id, int src_width, int src_height,
+                     int dst_width, int dst_height, int zpos) {
+    request->Add(plane.id, GetPropertyId(plane, "FB_ID"), fb_id);
+    request->Add(plane.id, GetPropertyId(plane, "CRTC_ID"), crtc_id);
+    request->Add(plane.id, GetPropertyId(plane, "SRC_X"), 0);
+    request->Add(plane.id, GetPropertyId(plane, "SRC_Y"), 0);
+    request->Add(plane.id, GetPropertyId(plane, "SRC_W"), static_cast<uint64_t>(src_width) << 16);
+    request->Add(plane.id, GetPropertyId(plane, "SRC_H"), static_cast<uint64_t>(src_height) << 16);
+    request->Add(plane.id, GetPropertyId(plane, "CRTC_X"), 0);
+    request->Add(plane.id, GetPropertyId(plane, "CRTC_Y"), 0);
+    request->Add(plane.id, GetPropertyId(plane, "CRTC_W"), dst_width);
+    request->Add(plane.id, GetPropertyId(plane, "CRTC_H"), dst_height);
+    request->Add(plane.id, GetPropertyId(plane, "zpos"), zpos);
+    request->Add(plane.id, GetPropertyId(plane, "alpha"), 0xffff);
+}
+
+int CommitAtomic(int fd, const AtomicRequest& request, uint32_t flags) {
+    drm_mode_atomic atomic{};
+    atomic.flags = flags;
+    atomic.count_objs = request.object_ids.size();
+    atomic.objs_ptr = reinterpret_cast<uint64_t>(request.object_ids.data());
+    atomic.count_props_ptr = reinterpret_cast<uint64_t>(request.property_counts.data());
+    atomic.props_ptr = reinterpret_cast<uint64_t>(request.property_ids.data());
+    atomic.prop_values_ptr = reinterpret_cast<uint64_t>(request.property_values.data());
+    return ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &atomic) == 0 ? 0 : -1;
+}
+
+void AddModesetRequest(AtomicRequest* request, const DrmAtomicState& state, const DrmDisplay* display) {
+    request->Add(state.connector.id, GetPropertyId(state.connector, "CRTC_ID"), display->crtc_id);
+    request->Add(state.crtc.id, GetPropertyId(state.crtc, "MODE_ID"), state.mode_blob_id);
+    request->Add(state.crtc.id, GetPropertyId(state.crtc, "ACTIVE"), 1);
+}
+
+int OpenDisplayCard(DrmDisplay* display, int width, int height, drm_mode_modeinfo* mode) {
+    const char* cards[] = {"/dev/dri/card0", "/dev/dri/card1", "/dev/dri/card2", "/dev/dri/card3"};
+    for (const char* card : cards) {
+        const int fd = open(card, O_RDWR | O_CLOEXEC);
+        if (fd < 0) {
+            continue;
+        }
+        uint32_t connector_id = 0;
+        uint32_t crtc_id = 0;
+        int crtc_index = -1;
+        if (PickConnector(fd, width, height, &connector_id, &crtc_id, &crtc_index, mode) == 0 &&
+            EnableAtomicCapabilities(fd) == 0) {
+            display->drm_fd = fd;
+            display->conn_id = connector_id;
+            display->crtc_id = crtc_id;
+            display->crtc_index = crtc_index;
+            return 0;
+        }
+        close(fd);
+    }
+    return -1;
+}
+
+}  // namespace
+
+int drm_display_init(DrmDisplay* display, int width, int height) {
+    if (display == nullptr || width <= 0 || height <= 0) {
+        return -1;
+    }
+
+    drm_mode_modeinfo mode{};
+    if (OpenDisplayCard(display, width, height, &mode) != 0) {
+        fprintf(stderr, "DRM: atomic KMS connector not available\n");
+        return -1;
+    }
+
+    auto* state = new DrmAtomicState();
+    state->mode = mode;
+    display->mode_width = mode.hdisplay;
+    display->mode_height = mode.vdisplay;
+    display->atomic_state = state;
+
+    auto* original = new DrmCrtcState();
+    original->conn_id = display->conn_id;
+    original->valid = GetCrtc(display->drm_fd, display->crtc_id, &original->crtc) == 0;
+    display->orig_crtc = original;
+
+    if (ReadProperties(display->drm_fd, display->crtc_id, DRM_MODE_OBJECT_CRTC, &state->crtc) != 0 ||
+        ReadProperties(display->drm_fd, display->conn_id, DRM_MODE_OBJECT_CONNECTOR, &state->connector) != 0 ||
+        FindUiPlane(display->drm_fd, display->crtc_index, state) != 0 ||
+        CreateUiBuffer(display->drm_fd, display->mode_width, display->mode_height, &state->ui_buffers[0]) != 0 ||
+        CreateUiBuffer(display->drm_fd, display->mode_width, display->mode_height, &state->ui_buffers[1]) != 0) {
+        fprintf(stderr, "DRM: NV12/ABGR dual plane setup failed\n");
+        drm_display_deinit(display);
+        return -1;
+    }
+
+    drm_mode_create_blob blob{};
+    blob.length = sizeof(state->mode);
+    blob.data = reinterpret_cast<uint64_t>(&state->mode);
+    if (ioctl(display->drm_fd, DRM_IOCTL_MODE_CREATEPROPBLOB, &blob) != 0) {
+        drm_display_deinit(display);
+        return -1;
+    }
+    state->mode_blob_id = blob.blob_id;
+    return 0;
+}
+
+int drm_display_get_ui_buffer(DrmDisplay* display, image_buffer_t* ui_buffer) {
+    if (display == nullptr || ui_buffer == nullptr || display->atomic_state == nullptr) {
+        return -1;
+    }
+    auto* state = static_cast<DrmAtomicState*>(display->atomic_state);
+    DumbBuffer& buffer = state->ui_buffers[state->write_ui_index];
+    if (buffer.dmabuf_fd < 0) {
+        return -1;
+    }
+    memset(ui_buffer, 0, sizeof(*ui_buffer));
+    ui_buffer->width = display->mode_width;
+    ui_buffer->height = display->mode_height;
+    ui_buffer->width_stride = buffer.pitch / 4;
+    ui_buffer->height_stride = display->mode_height;
+    ui_buffer->format = IMAGE_FORMAT_RGBA8888;
+    ui_buffer->size = buffer.size;
+    ui_buffer->fd = buffer.dmabuf_fd;
+    return 0;
+}
+
+int drm_display_present(DrmDisplay* display, const image_buffer_t* image) {
+    if (display == nullptr || image == nullptr || display->atomic_state == nullptr) {
+        return -1;
+    }
+    image_buffer_t ui_buffer;
+    if (drm_display_get_ui_buffer(display, &ui_buffer) != 0) {
+        return -1;
+    }
+    image_buffer_t source = *image;
+    if (convert_image(&source, &ui_buffer, nullptr, nullptr, 0) != 0) {
+        return -1;
+    }
+
+    auto* state = static_cast<DrmAtomicState*>(display->atomic_state);
+    AtomicRequest request;
+    if (!state->initialized) {
+        AddModesetRequest(&request, *state, display);
+    }
+    const DumbBuffer& buffer = state->ui_buffers[state->write_ui_index];
+    AddPlaneRequest(&request, state->ui_plane, display->crtc_id, buffer.fb_id,
+                    display->mode_width, display->mode_height,
+                    display->mode_width, display->mode_height, 1);
+    const uint32_t flags = state->initialized ? 0 : DRM_MODE_ATOMIC_ALLOW_MODESET;
+    if (CommitAtomic(display->drm_fd, request, flags) != 0) {
+        return -1;
+    }
+    state->current_ui_index = state->write_ui_index;
+    state->write_ui_index = 1 - state->current_ui_index;
+    state->initialized = true;
+    return 0;
+}
+
+int drm_display_present_nv12(DrmDisplay* display, const image_buffer_t* video_buffer) {
+    if (display == nullptr || video_buffer == nullptr || display->atomic_state == nullptr) {
+        return -1;
+    }
+    auto* state = static_cast<DrmAtomicState*>(display->atomic_state);
+    const uint32_t fourcc = GetVideoFourcc(video_buffer);
+    if (fourcc == 0) {
+        return -1;
+    }
+    if (state->video_plane.id == 0 && FindVideoPlane(display->drm_fd, display->crtc_index, fourcc, state) != 0) {
+        fprintf(stderr, "DRM: no video plane supports the MPP format\n");
+        return -1;
+    }
+    uint32_t video_fb_id = 0;
+    if (GetVideoFramebuffer(display->drm_fd, state, video_buffer, &video_fb_id) != 0) {
+        fprintf(stderr, "DRM: import MPP NV12 DMA-BUF failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    AtomicRequest request;
+    const DumbBuffer& ui_buffer = state->ui_buffers[state->write_ui_index];
+    if (!state->initialized) {
+        AddModesetRequest(&request, *state, display);
+    }
+    AddPlaneRequest(&request, state->video_plane, display->crtc_id, video_fb_id,
+                    video_buffer->width, video_buffer->height,
+                    display->mode_width, display->mode_height, 0);
+    AddPlaneRequest(&request, state->ui_plane, display->crtc_id, ui_buffer.fb_id,
+                    display->mode_width, display->mode_height,
+                    display->mode_width, display->mode_height, 1);
+
+    const uint32_t flags = state->initialized ? 0 : DRM_MODE_ATOMIC_ALLOW_MODESET;
+    if (CommitAtomic(display->drm_fd, request, flags) != 0) {
+        fprintf(stderr, "DRM: atomic dual-plane commit failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    PurgeVideoFramebuffersWithOtherLayouts(display->drm_fd, state, video_buffer);
+    state->current_ui_index = state->write_ui_index;
+    state->write_ui_index = 1 - state->current_ui_index;
+    state->initialized = true;
+    return 0;
+}
+
+void drm_display_deinit(DrmDisplay* display) {
+    if (display == nullptr || display->drm_fd < 0) {
         return;
     }
 
-    if (disp->orig_crtc) {
-        DrmCrtcState* state = static_cast<DrmCrtcState*>(disp->orig_crtc);
-        if (state->valid) {
-            drm_mode_crtc restore = state->crtc;
-            restore.set_connectors_ptr = (uint64_t)(uintptr_t)&state->conn_id;
+    if (display->orig_crtc != nullptr) {
+        auto* original = static_cast<DrmCrtcState*>(display->orig_crtc);
+        if (original->valid) {
+            drm_mode_crtc restore = original->crtc;
+            restore.set_connectors_ptr = reinterpret_cast<uint64_t>(&original->conn_id);
             restore.count_connectors = 1;
-            drm_set_crtc(disp->drm_fd, &restore);
+            ioctl(display->drm_fd, DRM_IOCTL_MODE_SETCRTC, &restore);
+        }
+        delete original;
+        display->orig_crtc = nullptr;
+    }
+
+    if (display->atomic_state != nullptr) {
+        auto* state = static_cast<DrmAtomicState*>(display->atomic_state);
+        DestroyVideoFramebuffers(display->drm_fd, state);
+        DestroyUiBuffer(display->drm_fd, &state->ui_buffers[0]);
+        DestroyUiBuffer(display->drm_fd, &state->ui_buffers[1]);
+        if (state->mode_blob_id != 0) {
+            drm_mode_destroy_blob blob{};
+            blob.blob_id = state->mode_blob_id;
+            ioctl(display->drm_fd, DRM_IOCTL_MODE_DESTROYPROPBLOB, &blob);
         }
         delete state;
-        disp->orig_crtc = nullptr;
+        display->atomic_state = nullptr;
     }
 
-    if (disp->map) {
-        munmap(disp->map, disp->size);
-        disp->map = nullptr;
-    }
-
-    if (disp->dmabuf_fd >= 0) {
-        close(disp->dmabuf_fd);
-        disp->dmabuf_fd = -1;
-    }
-
-    if (disp->fb_id) {
-        // 使用原生 ioctl，不依赖 libdrm
-        ioctl(disp->drm_fd, DRM_IOCTL_MODE_RMFB, &disp->fb_id);
-        disp->fb_id = 0;
-    }
-
-    close(disp->drm_fd);
-    disp->drm_fd = -1;
+    close(display->drm_fd);
+    display->drm_fd = -1;
 }

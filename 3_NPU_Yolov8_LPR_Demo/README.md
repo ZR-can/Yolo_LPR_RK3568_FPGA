@@ -6,6 +6,41 @@
 当前主线实现的是 RK3568 端的视频解码、RGA 预处理、YOLOv8n 车牌定位、LPRNet 字符识别和双线程显示。
 FPGA 侧的 PCIe 预处理链路仍在后续开发阶段，当前 README 不把这部分视为已完成能力。
 
+## 开发记录
+
+### 2026-07-10 绘制性能回退排查
+
+- 用户反馈三层定位框、半透明圆角文字底板和加粗文字启用后帧率显著下降。
+- 静态排查确认：该 overlay 在 DRM 映射帧缓冲上执行大量 CPU 读-改-写。半透明圆角底板逐像素做 alpha 混合，三层框增加描边写入；两段文字各执行三次栅格化，且每次均重新缩放字模并申请释放临时内存。
+- 优先恢复单层不透明边框和单次文字栅格化，以现有 `Avg UI Drawing` 与 `System Throughput` 为基线验证；视觉样式需要保留时，再将叠加层改为预生成小型 RGBA overlay 后由 RGA 合成，避免 CPU 直接对 DRM 帧缓冲做 alpha 混合。
+- GPU 可参与 UI 渲染，但首选架构是 MPP NV12 DMA-BUF 直接进入 DRM 视频 plane，Mali GPU 通过 GBM + EGL + GLES 渲染 ARGB UI plane，DRM atomic KMS 以 zpos 和 alpha 合成两个 plane。这样 CPU 仅更新目标几何和文本状态，避免 GPU 合成整帧视频。
+- 该路线需先在板端确认 atomic plane 同时支持 NV12 和 ARGB8888，以及 `zpos`、`alpha`、fence 属性；MPP 的输出 buffer 必须在对应 DRM page-flip 完成前保持引用，不能在 decoder callback 返回并执行 `mpp_frame_deinit()` 后继续无保护地 scanout。
+- 对当前少量车牌框与标签的 UI，RGA 是优先方案：复用已有 DMA-BUF fd 导入能力，以缓存的 ARGB 字形、圆角面板和边框位图作为源，由 RGA 完成填充与 alpha 合成。GPU 仅在后续需要动画、大量动态矢量对象或复杂特效时引入；无论采用 RGA 还是 GPU，最终都应由 DRM 双 plane 合成，避免每帧生成完整的 CPU 可见视频帧。
+- 若后续扩展为左侧识别结果、上方状态栏、下方模式选择和右侧视频的交互式界面，渲染职责按 plane 划分：MPP/RGA 只提供视频 plane，Mali GPU 统一渲染整张透明 UI plane（包括视频上的检测框和标签），DRM 完成两层合成。不要让 RGA 与 GPU 分别写相邻或重叠的 UI 区域，以免增加额外 buffer、合成和 fence 同步复杂度。
+- 已完成 RGA-only 双 plane 代码路径：视频 target 的 `main()` 位于 `src/main_video.cc`，MPP NV12 DMA-BUF 由 DRM atomic KMS 导入底层 video plane；两个不映射到 CPU 的 ABGR UI buffer 由 RGA 轮换写入上层 plane。
+- 新增 `RgaOverlayRenderer`：每帧 RGA 清空透明 UI buffer 并绘制三层框；车牌、类型和置信度构成缓存键，缓存失效时才在普通内存生成小型直 alpha 圆角标签，随后通过位置化 RGA alpha blend 写入 UI DMA-BUF。CPU 不再访问 DRM 帧缓冲的像素。
+- MPP decoder callback 现为显示持有额外 `MppBuffer` 引用，当前 scanout 帧在下一次 atomic commit 成功替换后才释放。`save_interval` 在 dual-plane 模式暂时禁用，避免导出不完整的单 plane 图像。
+- 当前状态为代码已更新并完成静态检查；尚未在 Ubuntu 交叉编译或 RK3568 板端验证。板端需确认 atomic KMS 同时提供 NV12 与 ABGR8888 plane，以及 zpos/alpha 合成能力。
+- 修复 Ubuntu GCC 6.3 构建兼容：图片 demo 不再访问已移除的 CPU 映射 framebuffer；`InferJob` 使用显式构造函数入队，避免旧编译器拒绝花括号初始化。等待 Ubuntu 重新编译。
+- 修复 RGA overlay 链接冲突：`plate_font.h` 的字体位图改为仅由 `image_drawing.c` 定义，RGA 渲染模块仅引用该唯一实例，避免 `plate_font_data` 在两个 target 中重复定义。
+- 根据板端 `2.43 FPS` 数据修复显示反压：原 `Avg MPP Decode` 计时覆盖整个同步 `decoder->Decode()` 调用，并非纯硬件解码；RGA UI 与 DRM atomic commit 曾直接在该回调中执行。
+- 视频显示改为独立线程和容量为 2 的最新帧队列。解码回调只完成 NPU 预处理并移交持有引用的 MPP frame；队列满时丢弃旧帧并立即归还其 `MppBuffer`，避免显示阻塞 MPP 输出。
+- DRM 现在按 MPP DMA-BUF fd 与帧布局缓存 GEM handle / framebuffer，消除每帧 PRIME import、`ADDFB2`、`RMFB` 与 `GEM_CLOSE`；分辨率或格式变化后的旧缓存仅在新 atomic commit 成功后清理。
+- 默认关闭 MPP 每帧日志，性能统计改为分别报告 MPP 输出、实际送显、显示丢帧和 NPU 任务；尚待 Ubuntu 交叉编译与 RK3568 板端复测。
+- 修复 RK3568 RGA overlay 的 `RGA_COLORFILL fail: Invalid argument`：旧 `imrectangle` 会把细边转换为如 `2x6` 的独立 color-fill 目标。现在以完整 UI DMA-BUF 为目标，通过四个裁剪 `imfill` 区域绘制框线，并显式使用 `wrapbuffer_fd_t` 传入完整宽高和 stride。
+- 标签面板现按车牌框水平中心对齐，优先完整放置在框上方；上方空间不足时自动切换到框下方。面板坐标始终夹紧至 UI 边界，缓存生成时会按显示分辨率缩小字号，RGA blend 也保留最终裁剪保护，避免文字框越界或被裁切。
+- 视频编译入口已迁回 `src/main_video.cc`；`src/main.cc` 保留为空文件且不参与 video target 编译，避免双 main 或额外跳转接口。
+- `build_and_push.sh` 现从 `TARGET_SDK` 推导板端目录，构建后检查图片/视频可执行文件与至少三个视频 RKNN 模型，推送后检查 `main_video.cc` 对应的视频可执行文件和模型目录。
+
+### 2026-07-07 双缓冲与绘制修复
+
+- 本地工作区已从 GitHub `main` 回退后重新开始修复，并新建 `codex/fix-buffer-overlay` 分支；本地 `codex/pcie` 已删除，`git ls-remote --heads origin codex/pcie` 未发现远端同名 head。
+- 修复视频异步推理调度：将 `g_infer` 从单槽 ready 状态改为任务队列，避免新帧覆盖尚未被推理线程消费的输入任务。
+- 修复 `yolo_input_busy[]` 线程数据竞争：缓冲预约、失败释放、推理完成释放均集中到同一把互斥锁保护的 helper 中。
+- 修复 `process_pipeline_preprocessed()` 与双缓冲潜在不一致：预处理 pipeline 现在显式接收当前 RKNN 输入 buffer 对应的 `image_buffer_t`，LPR 裁剪不再固定读取 `input_mems[0]`。
+- 修复第二块 YOLO 输入缓冲释放顺序：备用 `rknn_tensor_mem` 在 `release_pipeline()` 销毁 RKNN context 之前释放，释放前先把 RKNN 输入重新绑定回主 buffer。
+- 更新车牌 overlay：统一使用洋红色三层定位框、深黑灰半透明圆角文字底板、白色粗体固定字号单行文字，并限制到画面边界内。
+
 ## 文件构成介绍
 
 ```
@@ -54,8 +89,8 @@ FPGA 侧的 PCIe 预处理链路仍在后续开发阶段，当前 README 不把�
 │   └── test4_out.png
 ├── src\        #工程源代码
 │   ├── lprnet.cc
-│   ├── main.cc
-│   ├── main_video.cc       #初版图片推理
+│   ├── main.cc             #保留为空，不参与编译
+│   ├── main_video.cc       #视频 demo 主函数
 │   ├── main_video1.cc      #初版基础上将CPU画矩形框改为用RGA画矩形框
 │   ├── main_video2.cc      #1版基础上加上了耗时与性能分析
 │   ├── postprocess.cc

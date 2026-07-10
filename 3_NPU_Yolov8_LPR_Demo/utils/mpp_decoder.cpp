@@ -6,8 +6,11 @@
 #include <pthread.h>
 #include <sys/syscall.h>
 
-#define LOGD printf
-// #define LOGD
+#ifdef MPP_DECODER_DEBUG
+#define LOGD(...) printf(__VA_ARGS__)
+#else
+#define LOGD(...) ((void)0)
+#endif
 
 static unsigned long GetCurrentTimeMS() {
     struct timeval tv;
@@ -249,11 +252,17 @@ int MppDecoder::Decode(uint8_t* pkt_data, int pkt_size, int pkt_eos)
                     // mpp_frame_get_width(frame);
                     // char *input_data =(char *) mpp_buffer_get_ptr(mpp_frame_get_buffer(frame));
                     if (callback != nullptr) {
+                        MppBuffer buffer = mpp_frame_get_buffer(frame);
                         MppFrameFormat format = mpp_frame_get_fmt(frame);
-                        char *data_vir =(char *) mpp_buffer_get_ptr(mpp_frame_get_buffer(frame));
-                        int fd = mpp_buffer_get_fd(mpp_frame_get_buffer(frame));
+                        char *data_vir =(char *) mpp_buffer_get_ptr(buffer);
+                        int fd = mpp_buffer_get_fd(buffer);
                         LOGD("data_vir=%p fd=%d ", data_vir, fd);
-                        callback(this->userdata, hor_stride, ver_stride, hor_width, ver_height, format, fd, data_vir);
+                        if (mpp_buffer_inc_ref(buffer) == MPP_OK) {
+                            callback(this->userdata, hor_stride, ver_stride, hor_width, ver_height,
+                                     format, fd, data_vir, buffer);
+                        } else {
+                            LOGD("mpp_buffer_inc_ref failed for display callback");
+                        }
                     }
                     unsigned long cur_time_ms = GetCurrentTimeMS();
                     long time_gap = 1000/this->fps - (cur_time_ms - this->last_frame_time_ms);

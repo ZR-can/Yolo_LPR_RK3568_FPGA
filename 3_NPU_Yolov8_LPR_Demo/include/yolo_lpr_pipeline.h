@@ -27,7 +27,8 @@ struct PipelineResult {
 
 int init_pipeline(const char* yolov8_path, const char* lprnet7_path, const char* lprnet8_path, YOLOLPRPipelineContext* ctx);
 int process_pipeline(YOLOLPRPipelineContext* ctx, image_buffer_t* src_image, std::vector<PipelineResult>& results, bool draw_on_image = true);
-int process_pipeline_preprocessed(YOLOLPRPipelineContext* ctx, std::vector<PipelineResult>& results, bool draw_on_image = true);
+int process_pipeline_preprocessed(YOLOLPRPipelineContext* ctx, image_buffer_t* preprocessed_image, std::vector<PipelineResult>& results, bool draw_on_image = true);
+void draw_pipeline_result_overlay(image_buffer_t* image, const PipelineResult& result);
 void release_pipeline(YOLOLPRPipelineContext* ctx);
 
 #endif // YOLO_LPR_PIPELINE_H

@@ -13,6 +13,8 @@ extern "C" {
 #define COLOR_RED       0xFFFF0000
 #define COLOR_YELLOW    0xFFFFFF00
 #define COLOR_ORANGE    0xFFFF4500
+#define COLOR_MAGENTA   0xFFFF00FF
+#define COLOR_DARK_GRAY 0xFF202020
 #define COLOR_BLACK     0xFF000000
 #define COLOR_WHITE     0xFFFFFFFF
 
@@ -29,6 +31,12 @@ extern "C" {
  */
 void draw_rectangle(image_buffer_t* image, int rx, int ry, int rw, int rh, unsigned int color,
                       int thickness);
+
+void draw_rectangle_alpha(image_buffer_t* image, int rx, int ry, int rw, int rh, unsigned int color,
+                          int thickness, unsigned char alpha);
+
+void draw_filled_rounded_rectangle_alpha(image_buffer_t* image, int rx, int ry, int rw, int rh,
+                                         int radius, unsigned int color, unsigned char alpha);
 
 /**
  * @brief Draw obb rotate rectangle
