@@ -194,7 +194,7 @@ for img in ./test/test{1..4}.jpg; do ./yolov8_lpr_picture_demo ./model/yolov8.rk
 
 #推理视频
 cd /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo
-./yolov8_lpr_video_demo ./model/yolov8.rknn ./model/lprnet7repair_i8.rknn ./model/lprnet8repair_i8.rknn ./test/testvideo.h264 0
+./yolov8_lpr_video_demo ./model/yolov8.rknn ./model/lprnet7repair_i8.rknn ./model/lprnet8repair_i8.rknn ./test/testvideo1.h264 0
 
 #退出板端终端命令为logout
 
