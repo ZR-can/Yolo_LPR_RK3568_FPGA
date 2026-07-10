@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.10)
 
 project(yolov8_lpr_demo)
 
-#set(CMAKE_CXX_STANDARD 11)
-#set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if (ENABLE_ASAN)
     message(STATUS "BUILD WITH ADDRESS SANITIZER")
@@ -43,6 +43,7 @@ set(DEMO_COMMON_SRCS
     src/yolo_lpr_pipeline.cc
     src/simple_tracker.cc
     src/drm_display.cc
+    src/rga_overlay_renderer.cc
 )
 
 set(TARGET_PICTURE yolov8_lpr_picture_demo)

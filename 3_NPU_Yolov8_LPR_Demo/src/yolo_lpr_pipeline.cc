@@ -14,8 +14,149 @@
 struct PlateDisplayInfo {
     std::string plate_str;
     std::string type_name_cn;
+    unsigned int box_color;
     unsigned int text_color;
 };
+
+static int clamp_int(int value, int low, int high) {
+    return std::max(low, std::min(value, high));
+}
+
+static int measure_text_width_px(const std::string& text, int font_px) {
+    int max_line_w = 0;
+    int line_w = 0;
+
+    for (size_t i = 0; i < text.size();) {
+        unsigned char ch = (unsigned char)text[i];
+        if (text[i] == '\n') {
+            max_line_w = std::max(max_line_w, line_w);
+            line_w = 0;
+            ++i;
+            continue;
+        }
+
+        if (ch >= 0xE0 && i + 2 < text.size()) {
+            line_w += font_px;
+            i += 3;
+        } else {
+            line_w += font_px / 2 + 2;
+            ++i;
+        }
+    }
+
+    return std::max(max_line_w, line_w);
+}
+
+static void draw_bold_text(image_buffer_t* image, const std::string& text, int x, int y,
+                           unsigned int color, int font_px) {
+    draw_text(image, text.c_str(), x, y, color, font_px);
+    draw_text(image, text.c_str(), x + 1, y, color, font_px);
+    draw_text(image, text.c_str(), x, y + 1, color, font_px);
+}
+
+static PlateDisplayInfo make_plate_display_info(const std::string& plate_str, int cls_id) {
+    PlateDisplayInfo info;
+    info.plate_str = plate_str;
+    info.type_name_cn = "黑";
+    info.box_color = COLOR_MAGENTA;
+    info.text_color = COLOR_WHITE;
+
+    switch (cls_id) {
+        case 0: info.type_name_cn = "蓝"; break;
+        case 1: info.type_name_cn = "绿"; break;
+        case 2: info.type_name_cn = "黄"; break;
+        case 3: info.type_name_cn = "黑"; break;
+        default: break;
+    }
+
+    if (plate_str.find("警") != std::string::npos) {
+        info.type_name_cn = "白";
+    } else if (plate_str.find("学") != std::string::npos) {
+        info.type_name_cn = "黄";
+    } else if (plate_str.find("港") != std::string::npos || plate_str.find("澳") != std::string::npos ||
+               plate_str.find("领") != std::string::npos || plate_str.find("使") != std::string::npos) {
+        info.type_name_cn = "黑";
+    }
+
+    return info;
+}
+
+void draw_pipeline_result_overlay(image_buffer_t* image, const PipelineResult& result) {
+    if (image == nullptr || image->virt_addr == nullptr || image->width <= 0 || image->height <= 0) {
+        return;
+    }
+
+    const int img_w = image->width;
+    const int img_h = image->height;
+    int left = clamp_int(result.left, 0, img_w - 1);
+    int top = clamp_int(result.top, 0, img_h - 1);
+    int right = clamp_int(result.right, 0, img_w - 1);
+    int bottom = clamp_int(result.bottom, 0, img_h - 1);
+
+    if (right <= left || bottom <= top) {
+        return;
+    }
+
+    const int box_w = right - left;
+    const int box_h = bottom - top;
+
+    draw_rectangle_alpha(image, left - 2, top - 2, box_w + 4, box_h + 4, COLOR_BLACK, 2, 120);
+    draw_rectangle_alpha(image, left - 1, top - 1, box_w + 2, box_h + 2, COLOR_WHITE, 2, 255);
+    draw_rectangle_alpha(image, left, top, box_w, box_h, COLOR_MAGENTA, 4, 255);
+
+    const int plate_font_px = 28;
+    const int meta_font_px = 22;
+    const int pad_x = 8;
+    const int pad_y = 4;
+    const int text_gap = 10;
+    const int box_gap = 4;
+    const int panel_radius = 8;
+
+    char meta_buf[96];
+    snprintf(meta_buf, sizeof(meta_buf), "%s %.1f%%", result.plate_type.c_str(), result.confidence * 100.0f);
+
+    std::string plate_text = result.plate_name.empty() ? "-" : result.plate_name;
+    std::string meta_text = meta_buf;
+
+    int plate_w = measure_text_width_px(plate_text, plate_font_px);
+    int meta_w = measure_text_width_px(meta_text, meta_font_px);
+    int row_h = std::max(plate_font_px * 2, meta_font_px * 2);
+    int panel_w = pad_x * 2 + plate_w + text_gap + meta_w + 2;
+    int panel_h = pad_y * 2 + row_h + 2;
+
+    if (panel_w > img_w) {
+        panel_w = img_w;
+    }
+    if (panel_h > img_h) {
+        panel_h = img_h;
+    }
+
+    int panel_x = left;
+    if (panel_x + panel_w > img_w) {
+        panel_x = img_w - panel_w;
+    }
+    panel_x = std::max(0, panel_x);
+
+    int panel_y = top - panel_h - box_gap;
+    if (panel_y < 0) {
+        panel_y = bottom + box_gap;
+    }
+    if (panel_y + panel_h > img_h) {
+        panel_y = img_h - panel_h;
+    }
+    panel_y = std::max(0, panel_y);
+
+    draw_filled_rounded_rectangle_alpha(image, panel_x, panel_y, panel_w, panel_h,
+                                        panel_radius, COLOR_DARK_GRAY, 190);
+
+    int plate_x = panel_x + pad_x;
+    int plate_y = panel_y + pad_y;
+    int meta_x = plate_x + plate_w + text_gap;
+    int meta_y = plate_y + (plate_font_px * 2 - meta_font_px * 2) / 2;
+
+    draw_bold_text(image, plate_text, plate_x, plate_y, COLOR_WHITE, plate_font_px);
+    draw_bold_text(image, meta_text, meta_x, meta_y, COLOR_WHITE, meta_font_px);
+}
 
 int init_pipeline(const char* yolov8_path, const char* lprnet7_path, const char* lprnet8_path, YOLOLPRPipelineContext* ctx) {
     memset(ctx, 0, sizeof(YOLOLPRPipelineContext));
@@ -51,7 +192,6 @@ int process_pipeline(YOLOLPRPipelineContext* ctx, image_buffer_t* src_image, std
     int ret = inference_yolov8_model(&ctx->yolo_ctx, src_image, &od_results);
     if (ret != 0) return ret;
 
-    char text[256];
     out_results.clear();
 
     for (int i = 0; i < od_results.count; i++) {
@@ -61,6 +201,9 @@ int process_pipeline(YOLOLPRPipelineContext* ctx, image_buffer_t* src_image, std
         int y1 = std::max(0, det_result->box.top);
         int x2 = std::min(src_image->width - 1, det_result->box.right);
         int y2 = std::min(src_image->height - 1, det_result->box.bottom);
+        if (x2 <= x1 || y2 <= y1) {
+            continue;
+        }
 
         image_buffer_t crop_img;
         memset(&crop_img, 0, sizeof(image_buffer_t));
@@ -69,6 +212,9 @@ int process_pipeline(YOLOLPRPipelineContext* ctx, image_buffer_t* src_image, std
         crop_img.format = IMAGE_FORMAT_RGB888;
         crop_img.size = crop_img.width * crop_img.height * 3;
         crop_img.virt_addr = (unsigned char *)malloc(crop_img.size);
+        if (crop_img.virt_addr == nullptr) {
+            continue;
+        }
 
         image_preprocess(*src_image, crop_img, x1, y1, x2, y2);
 
@@ -84,26 +230,8 @@ int process_pipeline(YOLOLPRPipelineContext* ctx, image_buffer_t* src_image, std
         printf("Plate [%s] @ (%d %d %d %d) %.3f -> Text: %s\n", 
             coco_cls_to_name(det_result->cls_id), x1, y1, x2, y2, det_result->prop, lpr_res.plate_name.c_str());
         
-        std::string plate_str = lpr_res.plate_name;    
-        const char* type_name_cn = "黑";
-        unsigned int cpu_box_color = COLOR_BLACK; 
-        unsigned int cpu_text_color = COLOR_RED; 
-        
-        switch (det_result->cls_id) {
-            case 0: type_name_cn = "蓝"; cpu_box_color = COLOR_BLUE; break;
-            case 1: type_name_cn = "绿"; cpu_box_color = COLOR_GREEN; break;
-            case 2: type_name_cn = "黄"; cpu_box_color = COLOR_YELLOW; break;
-            case 3: type_name_cn = "黑"; cpu_box_color = COLOR_BLACK; break;
-        }
-        
-        if (plate_str.find("警") != std::string::npos) {
-            type_name_cn = "白"; cpu_box_color = COLOR_WHITE; cpu_text_color = COLOR_RED;
-        } else if (plate_str.find("学") != std::string::npos) {
-            type_name_cn = "黄"; cpu_box_color = COLOR_YELLOW; cpu_text_color = COLOR_YELLOW;
-        } else if (plate_str.find("港") != std::string::npos || plate_str.find("澳") != std::string::npos || 
-                    plate_str.find("领") != std::string::npos || plate_str.find("使") != std::string::npos) {
-            type_name_cn = "黑"; cpu_box_color = COLOR_BLACK; cpu_text_color = COLOR_WHITE;
-        }
+        std::string plate_str = lpr_res.plate_name;
+        PlateDisplayInfo display_info = make_plate_display_info(plate_str, det_result->cls_id);
 
         PipelineResult res;
         res.left = x1;
@@ -113,52 +241,45 @@ int process_pipeline(YOLOLPRPipelineContext* ctx, image_buffer_t* src_image, std
         res.confidence = det_result->prop;
         res.text_confidence = lpr_res.text_confidence;
         res.plate_name = plate_str;
-        res.plate_type = type_name_cn;
-        res.box_color = cpu_box_color;
-        res.text_color = cpu_text_color;
+        res.plate_type = display_info.type_name_cn;
+        res.box_color = display_info.box_color;
+        res.text_color = display_info.text_color;
         
         out_results.push_back(res);
 
         if (draw_on_image) {
-            int box_h = y2 - y1;
-            
-            // 动态字号计算：基础比例跟随框高，限制在 [18, 24] 像素之间
-            int dynamic_fontsize = std::max(18, std::min(24, box_h / 2));
-
-            // 动态行高偏移：第一行紧贴框顶，第二行在其上方
-            int offset_line1 = dynamic_fontsize;
-            int offset_line2 = dynamic_fontsize * 2 + 2; 
-
-            // 画检测框
-            draw_rectangle(src_image, x1, y1, x2 - x1, box_h, cpu_box_color, 3);
-            
-            // 画第一行文字 (类型与置信度)，加入 std::max 保护防止 Y 坐标越界
-            sprintf(text, "%s%.1f%%", type_name_cn, det_result->prop * 100);
-            draw_text(src_image, text, x1, std::max(0, y1 - offset_line1), cpu_text_color, dynamic_fontsize);
-            
-            // 画第二行文字 (车牌号)
-            sprintf(text, "%s", plate_str.c_str());
-            draw_text(src_image, text, x1, std::max(0, y1 - offset_line2), cpu_text_color, dynamic_fontsize); 
+            draw_pipeline_result_overlay(src_image, res);
         }
     }
 
     return 0;
 }
 
-int process_pipeline_preprocessed(YOLOLPRPipelineContext* ctx, std::vector<PipelineResult>& out_results, bool draw_on_image) {
+int process_pipeline_preprocessed(YOLOLPRPipelineContext* ctx, image_buffer_t* preprocessed_image,
+                                  std::vector<PipelineResult>& out_results, bool draw_on_image) {
+    if (ctx == nullptr || preprocessed_image == nullptr || preprocessed_image->virt_addr == nullptr) {
+        return -1;
+    }
+    if (preprocessed_image->format != IMAGE_FORMAT_RGB888) {
+        printf("process_pipeline_preprocessed expects RGB888 input, got format=%d\n", preprocessed_image->format);
+        return -1;
+    }
+
     object_detect_result_list od_results;
     int ret = inference_yolov8_model_preprocessed(&ctx->yolo_ctx, &od_results);
     if (ret != 0) return ret;
 
-    image_buffer_t rgb_model_img;
-    memset(&rgb_model_img, 0, sizeof(image_buffer_t));
-    rgb_model_img.width = ctx->yolo_ctx.model_width;
-    rgb_model_img.height = ctx->yolo_ctx.model_height;
-    rgb_model_img.format = IMAGE_FORMAT_RGB888;
-    rgb_model_img.size = rgb_model_img.width * rgb_model_img.height * 3;
-    rgb_model_img.virt_addr = (unsigned char*)ctx->yolo_ctx.input_mems[0]->virt_addr;
+    image_buffer_t rgb_model_img = *preprocessed_image;
+    if (rgb_model_img.width <= 0) {
+        rgb_model_img.width = ctx->yolo_ctx.model_width;
+    }
+    if (rgb_model_img.height <= 0) {
+        rgb_model_img.height = ctx->yolo_ctx.model_height;
+    }
+    if (rgb_model_img.size <= 0) {
+        rgb_model_img.size = rgb_model_img.width * rgb_model_img.height * 3;
+    }
 
-    char text[256];
     out_results.clear();
 
     for (int i = 0; i < od_results.count; i++) {
@@ -168,6 +289,9 @@ int process_pipeline_preprocessed(YOLOLPRPipelineContext* ctx, std::vector<Pipel
         int y1 = std::max(0, det_result->box.top);
         int x2 = std::min(rgb_model_img.width - 1, det_result->box.right);
         int y2 = std::min(rgb_model_img.height - 1, det_result->box.bottom);
+        if (x2 <= x1 || y2 <= y1) {
+            continue;
+        }
 
         image_buffer_t crop_img;
         memset(&crop_img, 0, sizeof(image_buffer_t));
@@ -176,6 +300,9 @@ int process_pipeline_preprocessed(YOLOLPRPipelineContext* ctx, std::vector<Pipel
         crop_img.format = IMAGE_FORMAT_RGB888;
         crop_img.size = crop_img.width * crop_img.height * 3;
         crop_img.virt_addr = (unsigned char *)malloc(crop_img.size);
+        if (crop_img.virt_addr == nullptr) {
+            continue;
+        }
 
         image_preprocess(rgb_model_img, crop_img, x1, y1, x2, y2);
 
@@ -191,26 +318,8 @@ int process_pipeline_preprocessed(YOLOLPRPipelineContext* ctx, std::vector<Pipel
         printf("Plate [%s] @ (%d %d %d %d) %.3f -> Text: %s\n", 
             coco_cls_to_name(det_result->cls_id), x1, y1, x2, y2, det_result->prop, lpr_res.plate_name.c_str());
         
-        std::string plate_str = lpr_res.plate_name;    
-        const char* type_name_cn = "黑";
-        unsigned int cpu_box_color = COLOR_BLACK; 
-        unsigned int cpu_text_color = COLOR_RED; 
-        
-        switch (det_result->cls_id) {
-            case 0: type_name_cn = "蓝"; cpu_box_color = COLOR_BLUE; break;
-            case 1: type_name_cn = "绿"; cpu_box_color = COLOR_GREEN; break;
-            case 2: type_name_cn = "黄"; cpu_box_color = COLOR_YELLOW; break;
-            case 3: type_name_cn = "黑"; cpu_box_color = COLOR_BLACK; break;
-        }
-        
-        if (plate_str.find("警") != std::string::npos) {
-            type_name_cn = "白"; cpu_box_color = COLOR_WHITE; cpu_text_color = COLOR_RED;
-        } else if (plate_str.find("学") != std::string::npos) {
-            type_name_cn = "黄"; cpu_box_color = COLOR_YELLOW; cpu_text_color = COLOR_YELLOW;
-        } else if (plate_str.find("港") != std::string::npos || plate_str.find("澳") != std::string::npos || 
-                    plate_str.find("领") != std::string::npos || plate_str.find("使") != std::string::npos) {
-            type_name_cn = "黑"; cpu_box_color = COLOR_BLACK; cpu_text_color = COLOR_WHITE;
-        }
+        std::string plate_str = lpr_res.plate_name;
+        PlateDisplayInfo display_info = make_plate_display_info(plate_str, det_result->cls_id);
 
         PipelineResult res;
         res.left = x1;
@@ -220,32 +329,14 @@ int process_pipeline_preprocessed(YOLOLPRPipelineContext* ctx, std::vector<Pipel
         res.confidence = det_result->prop; // YOLO 的框置信度
         res.text_confidence = lpr_res.text_confidence; // LPRNet 的字符识别置信度
         res.plate_name = plate_str;
-        res.plate_type = type_name_cn;
-        res.box_color = cpu_box_color;
-        res.text_color = cpu_text_color;
+        res.plate_type = display_info.type_name_cn;
+        res.box_color = display_info.box_color;
+        res.text_color = display_info.text_color;
         
         out_results.push_back(res);
 
         if (draw_on_image) {
-            int box_h = y2 - y1;
-            
-            // 动态字号计算：基础比例跟随框高，限制在 [18, 24] 像素之间
-            int dynamic_fontsize = std::max(18, std::min(24, box_h / 2));
-
-            // 动态行高偏移：第一行紧贴框顶，第二行在其上方
-            int offset_line1 = dynamic_fontsize;
-            int offset_line2 = dynamic_fontsize * 2 + 2; 
-
-            // 画检测框
-            draw_rectangle(&rgb_model_img, x1, y1, x2 - x1, box_h, cpu_box_color, 3);
-            
-            // 画第一行文字 (类型与置信度)，加入 std::max 保护防止 Y 坐标越界
-            sprintf(text, "%s%.1f%%", type_name_cn, det_result->prop * 100);
-            draw_text(&rgb_model_img, text, x1, std::max(0, y1 - offset_line1), cpu_text_color, dynamic_fontsize);
-            
-            // 画第二行文字 (车牌号)
-            sprintf(text, "%s", plate_str.c_str());
-            draw_text(&rgb_model_img, text, x1, std::max(0, y1 - offset_line2), cpu_text_color, dynamic_fontsize); 
+            draw_pipeline_result_overlay(&rgb_model_img, res);
         }
 
     }

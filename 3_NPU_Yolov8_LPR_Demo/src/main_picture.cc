@@ -112,12 +112,7 @@ int main(int argc, char **argv)
         memset(&disp, 0, sizeof(DrmDisplay));
         
         if (drm_display_init(&disp, 1920, 1080) == 0) {
-            // 显示前刷新帧缓冲区（填充黑色清空）
-            if (disp.map != nullptr && disp.size > 0) {
-                memset(disp.map, 0, disp.size); // 填充0 = 黑色，清空缓冲区
-                printf("[Display] Frame buffer cleared (refreshed) before presenting image.\n");
-            }
-            
+            // RGA/DRM 路径会在其 UI plane 上完成本帧内容更新。
             // 显示处理后的图片
             drm_display_present(&disp, &src_image);
             printf("[Display] Image presented on screen successfully.\n");

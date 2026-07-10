@@ -7,23 +7,23 @@
 #include <chrono>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
+#include <deque>
 
-#include <errno.h>
 #include <signal.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <sys/time.h>
 #include <unistd.h>
 
 #include "yolo_lpr_pipeline.h" 
 #include "image_utils.h"
-#include "image_drawing.h"
 #include "mpp_decoder.h"
 #include "drm_display.h"
+#include "rga_overlay_renderer.h"
 #include "simple_tracker.h"
 
 #define DEFAULT_FPS 30
 #define FILE_READ_CHUNK (512 * 1024)
+#define DISPLAY_QUEUE_CAPACITY 2
 
 // 帧处理上下文，管理 Pipeline 句柄、控制标记及性能统计
 typedef struct FrameProcessContext {
@@ -31,26 +31,27 @@ typedef struct FrameProcessContext {
 
     DrmDisplay drm_display;
     bool drm_initialized;
-    image_buffer_t save_rgb_frame;
+    RgaOverlayRenderer overlay_renderer;
+    MppBuffer displayed_mpp_buffer;
     SimplePlateTracker tracker;
     int target_fps;
     int last_result_frame_id;
     rknn_tensor_mem* yolo_input_mems[2];
     bool yolo_input_busy[2];
     int yolo_input_index;
-    std::string input_path;
     int frame_index;
-    int save_interval;
 
     // --- 细分性能统计指标 ---
-    unsigned long long perf_total_frames;      // 总帧数
-    unsigned long long perf_det_frames;        // 触发推理的帧数
+    unsigned long long perf_total_frames;      // 成功送显帧数
+    unsigned long long perf_total_input_frames; // MPP 输出帧数
+    unsigned long long perf_total_npu_jobs;
+    unsigned long long perf_display_dropped_frames;
     unsigned long long perf_total_lpr_count;   // 总识别车牌数
     double perf_total_decode_ms;       // 总解码耗时
     double perf_total_convert_ms;      // 总 RGA 预处理(NV12->RGB)耗时
     double perf_total_npu_infer_ms;    // 总 NPU pipeline 推理耗时
     double perf_total_ui_drawing_ms;   // 总 UI 绘制与追踪耗时
-    double perf_total_present_ms;      // 总 DRM 送显耗时(NV12 转 RGBA8888并缩放至屏幕分辨率送显)
+    double perf_total_present_ms;      // 总 DRM 原子双 plane 提交耗时
     double perf_total_end2end_ms;      // 总端到端延迟
     unsigned long long perf_start_ms;
 } FrameProcessContext;
@@ -79,12 +80,37 @@ static unsigned long long now_ms() {
 // ---------------------------------------------------------
 // 共享推理输入缓冲区索引（主线程写入，推理线程读取）
 // ---------------------------------------------------------
+struct InferJob {
+    int frame_id;
+    int buf_index;
+
+    InferJob(int frame_id_value = -1, int buf_index_value = 0)
+        : frame_id(frame_id_value), buf_index(buf_index_value) {}
+};
+
 struct SharedInfer {
-    int frame_id = -1;
-    int buf_index = 0;
-    bool ready = false;
+    std::deque<InferJob> jobs;
     std::mutex mtx;
+    std::condition_variable cv;
 } g_infer;
+
+struct DisplayJob {
+    image_buffer_t video;
+    MppBuffer buffer_ref;
+    int frame_id;
+    unsigned long long enqueue_ms;
+
+    DisplayJob()
+        : buffer_ref(NULL), frame_id(-1), enqueue_ms(0) {
+        memset(&video, 0, sizeof(video));
+    }
+};
+
+struct SharedDisplay {
+    std::deque<DisplayJob> jobs;
+    std::mutex mtx;
+    std::condition_variable cv;
+} g_display;
 
 // ---------------------------------------------------------
 // 共享最新的 Pipeline 推理结果（推理线程写入，主线程读取）
@@ -94,6 +120,100 @@ struct SharedResult {
     int frame_id = -1;
     std::mutex mtx;
 } g_result;
+
+static int reserve_yolo_input_buffer(FrameProcessContext* ctx) {
+    std::lock_guard<std::mutex> lock(g_infer.mtx);
+    int buffer_count = (ctx->yolo_input_mems[1] != nullptr) ? 2 : 1;
+
+    for (int i = 0; i < buffer_count; ++i) {
+        int candidate = (ctx->yolo_input_index + 1 + i) % buffer_count;
+        if (!ctx->yolo_input_busy[candidate]) {
+            ctx->yolo_input_busy[candidate] = true;
+            ctx->yolo_input_index = candidate;
+            return candidate;
+        }
+    }
+
+    return -1;
+}
+
+static void release_yolo_input_buffer(FrameProcessContext* ctx, int buf_index) {
+    if (buf_index < 0 || buf_index >= 2) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_infer.mtx);
+    ctx->yolo_input_busy[buf_index] = false;
+}
+
+static void enqueue_infer_job(FrameProcessContext* ctx, int frame_id, int buf_index) {
+    if (buf_index < 0 || buf_index >= 2) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_infer.mtx);
+        if (g_should_stop) {
+            ctx->yolo_input_busy[buf_index] = false;
+            return;
+        }
+        g_infer.jobs.push_back(InferJob(frame_id, buf_index));
+    }
+    g_infer.cv.notify_one();
+}
+
+static void release_display_job(DisplayJob* job) {
+    if (job != nullptr && job->buffer_ref != NULL) {
+        mpp_buffer_put(job->buffer_ref);
+        job->buffer_ref = NULL;
+    }
+}
+
+static void enqueue_display_job(FrameProcessContext* ctx, const image_buffer_t& video,
+                                int frame_id, MppBuffer buffer_ref, unsigned long long enqueue_ms) {
+    if (ctx == nullptr || buffer_ref == NULL) {
+        if (buffer_ref != NULL) {
+            mpp_buffer_put(buffer_ref);
+        }
+        return;
+    }
+
+    std::vector<MppBuffer> dropped_buffers;
+    bool should_release = false;
+    {
+        std::lock_guard<std::mutex> lock(g_display.mtx);
+        if (g_should_stop) {
+            should_release = true;
+        } else {
+            while (g_display.jobs.size() >= DISPLAY_QUEUE_CAPACITY) {
+                DisplayJob& dropped = g_display.jobs.front();
+                dropped_buffers.push_back(dropped.buffer_ref);
+                dropped.buffer_ref = NULL;
+                g_display.jobs.pop_front();
+                ctx->perf_display_dropped_frames++;
+            }
+
+            DisplayJob job;
+            job.video = video;
+            job.video.virt_addr = NULL;
+            job.buffer_ref = buffer_ref;
+            job.frame_id = frame_id;
+            job.enqueue_ms = enqueue_ms;
+            g_display.jobs.push_back(job);
+        }
+    }
+
+    for (MppBuffer dropped_buffer : dropped_buffers) {
+        if (dropped_buffer != NULL) {
+            mpp_buffer_put(dropped_buffer);
+        }
+    }
+    if (should_release) {
+        mpp_buffer_put(buffer_ref);
+        return;
+    }
+    g_display.cv.notify_one();
+}
 
 static void handle_signal(int sig) {
     (void)sig;
@@ -106,18 +226,6 @@ static int detect_video_type(const std::string& input) {
         return 265;
     }
     return 264;
-}
-
-static int ensure_result_dir(const char* dir_path) {
-    struct stat st;
-    if (stat(dir_path, &st) == 0) {
-        return S_ISDIR(st.st_mode) ? 0 : -1;
-    }
-    if (mkdir(dir_path, 0755) != 0 && errno != EEXIST) {
-        printf("ERROR: Failed to create result directory: %s (errno=%d)\n", dir_path, errno);
-        return -1;
-    }
-    return 0;
 }
 
 static image_format_t map_mpp_format(int format) {
@@ -133,61 +241,81 @@ static image_format_t map_mpp_format(int format) {
 // ==================== 推理子线程 ====================
 static void inference_thread_func(FrameProcessContext* ctx) {
     printf("[Infer Thread] Started.\n");
-    int last_frame_id = -1;
 
-    while (!g_should_stop) {
-        int current_frame_id = -1;
-        int buf_index = 0;
+    while (true) {
+        InferJob job;
         {
-            std::lock_guard<std::mutex> lock(g_infer.mtx);
-            if (g_infer.ready) {
-                current_frame_id = g_infer.frame_id;
-                buf_index = g_infer.buf_index;
-                g_infer.ready = false;
+            std::unique_lock<std::mutex> lock(g_infer.mtx);
+            g_infer.cv.wait(lock, [] {
+                return g_should_stop || !g_infer.jobs.empty();
+            });
+
+            if (g_infer.jobs.empty()) {
+                if (g_should_stop) {
+                    break;
+                }
+                continue;
             }
+
+            job = g_infer.jobs.front();
+            g_infer.jobs.pop_front();
         }
 
-        if (current_frame_id < 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        if (job.buf_index < 0 || job.buf_index >= 2) {
             continue;
         }
 
-        last_frame_id = current_frame_id;
-
-        if ((current_frame_id % 2) != 0) {
-            ctx->yolo_input_busy[buf_index] = false;
-            continue;
-        }
-
-        rknn_tensor_mem* input_mem = ctx->yolo_input_mems[buf_index];
+        rknn_tensor_mem* input_mem = ctx->yolo_input_mems[job.buf_index];
         if (input_mem == NULL) {
-            ctx->yolo_input_busy[buf_index] = false;
+            release_yolo_input_buffer(ctx, job.buf_index);
             continue;
         }
 
-        rknn_set_io_mem(ctx->pipeline_ctx.yolo_ctx.rknn_ctx, input_mem, &ctx->pipeline_ctx.yolo_ctx.input_native_attrs[0]);
+        int ret = rknn_set_io_mem(ctx->pipeline_ctx.yolo_ctx.rknn_ctx, input_mem, &ctx->pipeline_ctx.yolo_ctx.input_native_attrs[0]);
+        if (ret < 0) {
+            printf("rknn_set_io_mem failed for YOLO input buffer %d, ret=%d\n", job.buf_index, ret);
+            release_yolo_input_buffer(ctx, job.buf_index);
+            continue;
+        }
+
+        image_buffer_t yolo_input_img;
+        memset(&yolo_input_img, 0, sizeof(image_buffer_t));
+        yolo_input_img.width = ctx->pipeline_ctx.yolo_ctx.model_width;
+        yolo_input_img.height = ctx->pipeline_ctx.yolo_ctx.model_height;
+        yolo_input_img.width_stride = ctx->pipeline_ctx.yolo_ctx.model_width;
+        yolo_input_img.height_stride = ctx->pipeline_ctx.yolo_ctx.model_height;
+        yolo_input_img.format = IMAGE_FORMAT_RGB888;
+        yolo_input_img.size = yolo_input_img.width * yolo_input_img.height * 3;
+        yolo_input_img.fd = input_mem->fd;
+        yolo_input_img.virt_addr = (unsigned char*)input_mem->virt_addr;
+        if (yolo_input_img.virt_addr == nullptr) {
+            printf("YOLO input buffer %d has null virtual address\n", job.buf_index);
+            release_yolo_input_buffer(ctx, job.buf_index);
+            continue;
+        }
 
         // 2. 调用 Pipeline 进行端到端推理分析
         std::vector<PipelineResult> local_results;
         PerfTimer npu_timer;
         npu_timer.start();
         // 传递 false 避免在推理线程执行绘制，以保证主线程绘制的实时性和线程安全
-        if (process_pipeline_preprocessed(&ctx->pipeline_ctx, local_results, false) == 0) {
+        if (process_pipeline_preprocessed(&ctx->pipeline_ctx, &yolo_input_img, local_results, false) == 0) {
             // 3. 将约束提取的结果同步至共享区
             std::lock_guard<std::mutex> lock(g_result.mtx);
             g_result.results = local_results;
-            g_result.frame_id = current_frame_id;
+            g_result.frame_id = job.frame_id;
+            ctx->perf_total_npu_jobs++;
         }
         ctx->perf_total_npu_infer_ms += npu_timer.get_elapsed_ms();
 
-        ctx->yolo_input_busy[buf_index] = false;
+        release_yolo_input_buffer(ctx, job.buf_index);
     }
     printf("[Infer Thread] Exited.\n");
 }
 
 
 // 单帧结果渲染与输出
-static void process_one_frame(FrameProcessContext* ctx, image_buffer_t* target_img, int frame_id) {
+static void process_one_frame(FrameProcessContext* ctx, image_buffer_t* ui_buffer, int frame_id) {
     PerfTimer total_timer;
     total_timer.start();
 
@@ -202,91 +330,117 @@ static void process_one_frame(FrameProcessContext* ctx, image_buffer_t* target_i
     if (result_frame_id >= 0 && result_frame_id != ctx->last_result_frame_id) {
         ctx->tracker.update(current_results, result_frame_id);
         ctx->last_result_frame_id = result_frame_id;
-        ctx->perf_det_frames++;
         ctx->perf_total_lpr_count += current_results.size();
     }
 
-    PipelineResult tracked_res;
     std::vector<PipelineResult> tracked_results;
     ctx->tracker.predict(frame_id, tracked_results);
 
+    std::vector<PipelineResult> draw_results;
+    draw_results.reserve(tracked_results.size());
+
     for (const auto& tracked_res : tracked_results) {
         // --- 坐标缩放映射 ---
-        float scale_x = (float)target_img->width / ctx->pipeline_ctx.yolo_ctx.model_width;
-        float scale_y = (float)target_img->height / ctx->pipeline_ctx.yolo_ctx.model_height;
+        float scale_x = (float)ui_buffer->width / ctx->pipeline_ctx.yolo_ctx.model_width;
+        float scale_y = (float)ui_buffer->height / ctx->pipeline_ctx.yolo_ctx.model_height;
 
         int draw_left   = (int)(tracked_res.left * scale_x);
         int draw_top    = (int)(tracked_res.top * scale_y);
         int draw_right  = (int)(tracked_res.right * scale_x);
         int draw_bottom = (int)(tracked_res.bottom * scale_y);
 
-        draw_left   = std::max(0, std::min(draw_left, target_img->width - 1));
-        draw_top    = std::max(0, std::min(draw_top, target_img->height - 1));
-        draw_right  = std::max(0, std::min(draw_right, target_img->width - 1));
-        draw_bottom = std::max(0, std::min(draw_bottom, target_img->height - 1));
+        draw_left   = std::max(0, std::min(draw_left, ui_buffer->width - 1));
+        draw_top    = std::max(0, std::min(draw_top, ui_buffer->height - 1));
+        draw_right  = std::max(0, std::min(draw_right, ui_buffer->width - 1));
+        draw_bottom = std::max(0, std::min(draw_bottom, ui_buffer->height - 1));
 
-        int draw_w = draw_right - draw_left;
-        int draw_h = draw_bottom - draw_top;
-
-        draw_rectangle(target_img, draw_left, draw_top, draw_w, draw_h, tracked_res.box_color, 3);
-
-        int dynamic_fontsize = std::max(18, std::min(24, draw_h / 2));
-        int offset_line1 = dynamic_fontsize;
-        int offset_line2 = dynamic_fontsize * 2 + 2;
-
-        char text_buf[256];
-        snprintf(text_buf, sizeof(text_buf), "%s%.1f%%", tracked_res.plate_type.c_str(), tracked_res.confidence * 100);
-        draw_text(target_img, text_buf, draw_left, std::max(0, draw_top - offset_line1), tracked_res.text_color, dynamic_fontsize);
-        snprintf(text_buf, sizeof(text_buf), "%s", tracked_res.plate_name.c_str());
-        draw_text(target_img, text_buf, draw_left, std::max(0, draw_top - offset_line2), tracked_res.text_color, dynamic_fontsize);
-    }
-    // 抽帧保存单帧逻辑
-    if (ctx->save_interval > 0 && (ctx->frame_index % ctx->save_interval) == 0) {
-            char out_path[128];
-            snprintf(out_path, sizeof(out_path), "result/%s_frame_%06d.jpg", 
-                ctx->input_path.c_str(), // 必须调用 .c_str()
-                ctx->frame_index);
-
-            // 1. 检查并准备 RGB888 缓冲区
-            if (ctx->save_rgb_frame.virt_addr == nullptr || 
-                ctx->save_rgb_frame.width != target_img->width || 
-                ctx->save_rgb_frame.height != target_img->height) {
-                
-                if (ctx->save_rgb_frame.virt_addr) free(ctx->save_rgb_frame.virt_addr);
-                
-                ctx->save_rgb_frame.width = target_img->width;
-                ctx->save_rgb_frame.height = target_img->height;
-                ctx->save_rgb_frame.format = IMAGE_FORMAT_RGB888;
-                ctx->save_rgb_frame.size = target_img->width * target_img->height * 3;
-                ctx->save_rgb_frame.virt_addr = (unsigned char*)malloc(ctx->save_rgb_frame.size);
-            }
-
-            if (ctx->save_rgb_frame.virt_addr) {
-                // 2. 调用 RGA 将带框的显存 (RGBA8888) 转换为保存所需的 RGB888
-                image_buffer_t dst_rgb = ctx->save_rgb_frame;
-                dst_rgb.fd = 0; // 输出到普通内存
-                
-                int conv_ret = convert_image(target_img, &dst_rgb, NULL, NULL, 0);
-                
-                if (conv_ret == 0) {
-                    // 3. 执行写文件 (此时格式已符合 RGB888 要求)
-                    if (write_image(out_path, &dst_rgb) == 0) {
-                        printf("DRM Frame Saved: %s (RGBA -> RGB via RGA)\n", out_path);
-                    }
-                } else {
-                    printf("Error: RGA failed to convert DRM frame for saving.\n");
-                }
-            }
+        if (draw_right <= draw_left || draw_bottom <= draw_top) {
+            continue;
         }
+
+        PipelineResult draw_res = tracked_res;
+        draw_res.left = draw_left;
+        draw_res.top = draw_top;
+        draw_res.right = draw_right;
+        draw_res.bottom = draw_bottom;
+        draw_results.push_back(draw_res);
+    }
+
+    if (ctx->overlay_renderer.Render(ui_buffer, draw_results) != 0) {
+        printf("RGA overlay render failed\n");
+    }
 
     ctx->perf_total_ui_drawing_ms += total_timer.get_elapsed_ms();
 }
 
-// 硬件解码器回调
+static void display_thread_func(FrameProcessContext* ctx) {
+    printf("[Display Thread] Started.\n");
+
+    while (true) {
+        DisplayJob job;
+        {
+            std::unique_lock<std::mutex> lock(g_display.mtx);
+            g_display.cv.wait(lock, [] {
+                return g_should_stop || !g_display.jobs.empty();
+            });
+
+            if (g_display.jobs.empty()) {
+                if (g_should_stop) {
+                    break;
+                }
+                continue;
+            }
+
+            job = g_display.jobs.front();
+            g_display.jobs.pop_front();
+        }
+
+        if (!ctx->drm_initialized) {
+            if (drm_display_init(&ctx->drm_display, job.video.width, job.video.height) == 0) {
+                ctx->drm_initialized = ctx->overlay_renderer.Init(ctx->drm_display.mode_width,
+                                                                    ctx->drm_display.mode_height) == 0;
+                if (!ctx->drm_initialized) {
+                    drm_display_deinit(&ctx->drm_display);
+                }
+            }
+        }
+
+        if (ctx->drm_initialized) {
+            image_buffer_t ui_buffer;
+            if (drm_display_get_ui_buffer(&ctx->drm_display, &ui_buffer) == 0) {
+                process_one_frame(ctx, &ui_buffer, job.frame_id);
+
+                PerfTimer present_timer;
+                present_timer.start();
+                if (drm_display_present_nv12(&ctx->drm_display, &job.video) == 0) {
+                    ctx->perf_total_present_ms += present_timer.get_elapsed_ms();
+                    if (ctx->displayed_mpp_buffer != NULL) {
+                        mpp_buffer_put(ctx->displayed_mpp_buffer);
+                    }
+                    ctx->displayed_mpp_buffer = job.buffer_ref;
+                    job.buffer_ref = NULL;
+                    ctx->perf_total_frames++;
+                    ctx->perf_total_end2end_ms += (double)(now_ms() - job.enqueue_ms);
+                }
+            }
+        }
+
+        release_display_job(&job);
+    }
+
+    printf("[Display Thread] Exited.\n");
+}
+
+// MPP decoder callback: preprocess for inference and enqueue the display frame.
 static void on_decoder_frame(void* userdata, int width_stride, int height_stride, int width, int height,
-                             int format, int fd, void* data) {
+                             int format, int fd, void* data, MppBuffer buffer_ref) {
     FrameProcessContext* ctx = (FrameProcessContext*)userdata;
-    if (!ctx || !data || g_should_stop) return;
+    if (!ctx || g_should_stop) {
+        if (buffer_ref) {
+            mpp_buffer_put(buffer_ref);
+        }
+        return;
+    }
 
     unsigned long long frame_begin_ms = now_ms();
     image_format_t src_fmt = map_mpp_format(format);
@@ -303,68 +457,40 @@ static void on_decoder_frame(void* userdata, int width_stride, int height_stride
     mpp_img.virt_addr = (unsigned char*)data;
 
     // --- RGA 送入 YOLO 推理 (零拷贝) ---
-    int next_index = (ctx->yolo_input_index + 1) % 2;
-    if (ctx->yolo_input_mems[1] == NULL) next_index = 0;
-    
-    if (!ctx->yolo_input_busy[next_index]) {
-        ctx->yolo_input_busy[next_index] = true;
-        ctx->yolo_input_index = next_index;
+    if ((ctx->frame_index % 2) == 0) {
+        int next_index = reserve_yolo_input_buffer(ctx);
+        rknn_tensor_mem* input_mem = (next_index >= 0) ? ctx->yolo_input_mems[next_index] : nullptr;
+        if (input_mem != nullptr) {
+            image_buffer_t dst_fd_img;
+            memset(&dst_fd_img, 0, sizeof(dst_fd_img));
+            dst_fd_img.width = ctx->pipeline_ctx.yolo_ctx.model_width;
+            dst_fd_img.height = ctx->pipeline_ctx.yolo_ctx.model_height;
+            dst_fd_img.width_stride = ctx->pipeline_ctx.yolo_ctx.model_width;
+            dst_fd_img.height_stride = ctx->pipeline_ctx.yolo_ctx.model_height;
+            dst_fd_img.format = IMAGE_FORMAT_RGB888;
+            dst_fd_img.size = dst_fd_img.width * dst_fd_img.height * 3;
+            dst_fd_img.fd = input_mem->fd;
+            dst_fd_img.virt_addr = (unsigned char*)input_mem->virt_addr;
 
-        image_buffer_t dst_fd_img;
-        memset(&dst_fd_img, 0, sizeof(dst_fd_img));
-        dst_fd_img.width = ctx->pipeline_ctx.yolo_ctx.model_width;
-        dst_fd_img.height = ctx->pipeline_ctx.yolo_ctx.model_height;
-        dst_fd_img.width_stride = ctx->pipeline_ctx.yolo_ctx.model_width;
-        dst_fd_img.height_stride = ctx->pipeline_ctx.yolo_ctx.model_height;
-        dst_fd_img.format = IMAGE_FORMAT_RGB888;
-        dst_fd_img.fd = ctx->yolo_input_mems[next_index]->fd;
+            unsigned long long convert_begin_ms = now_ms();
+            // RGA 直接从 MPP fd 转换到 NPU fd
+            int conv_ret = convert_image(&mpp_img, &dst_fd_img, NULL, NULL, 0);
+            ctx->perf_total_convert_ms += (double)(now_ms() - convert_begin_ms);
 
-        unsigned long long convert_begin_ms = now_ms();
-        // RGA 直接从 MPP fd 转换到 NPU fd
-        int conv_ret = convert_image(&mpp_img, &dst_fd_img, NULL, NULL, 0);
-        ctx->perf_total_convert_ms += (double)(now_ms() - convert_begin_ms);
-
-        if (conv_ret == 0) {
-            std::lock_guard<std::mutex> lock(g_infer.mtx);
-            g_infer.frame_id = ctx->frame_index;
-            g_infer.buf_index = next_index;
-            g_infer.ready = true;
-        } else {
-            ctx->yolo_input_busy[next_index] = false;
+            if (conv_ret == 0) {
+                enqueue_infer_job(ctx, ctx->frame_index, next_index);
+            } else {
+                release_yolo_input_buffer(ctx, next_index);
+            }
+        } else if (next_index >= 0) {
+            release_yolo_input_buffer(ctx, next_index);
         }
     }
 
-    // --- DRM 显示与 CPU 显存直画 ---
-    if (!ctx->drm_initialized) {
-        if (drm_display_init(&ctx->drm_display, width, height) == 0) {
-            ctx->drm_initialized = true;
-        }
-    }
+    enqueue_display_job(ctx, mpp_img, ctx->frame_index, buffer_ref, frame_begin_ms);
+    buffer_ref = NULL;
 
-    if (ctx->drm_initialized) {
-        // 步骤 A: RGA 硬件级零拷贝 (MPP fd -> DRM dmabuf_fd)
-        PerfTimer present_timer;
-        present_timer.start();
-        drm_display_present_NV12(&ctx->drm_display, &mpp_img);
-        ctx->perf_total_present_ms += present_timer.get_elapsed_ms();
-
-        // 步骤 B: 包装 DRM 的映射内存 (RGBA8888 格式)
-        image_buffer_t drm_img;
-        memset(&drm_img, 0, sizeof(drm_img));
-        drm_img.width = ctx->drm_display.mode_width;
-        drm_img.height = ctx->drm_display.mode_height;
-        drm_img.width_stride = ctx->drm_display.pitch / 4; 
-        drm_img.height_stride = ctx->drm_display.mode_height;
-        drm_img.format = IMAGE_FORMAT_RGBA8888;
-        drm_img.fd = ctx->drm_display.dmabuf_fd;
-        drm_img.virt_addr = (unsigned char*)ctx->drm_display.map;
-
-        // 步骤 C: CPU 直接操作显存绘制跟踪框和文字
-        process_one_frame(ctx, &drm_img, ctx->frame_index);
-    }
-
-    ctx->perf_total_frames++;
-    ctx->perf_total_end2end_ms += (double)(now_ms() - frame_begin_ms);
+    ctx->perf_total_input_frames++;
     ctx->frame_index++;
 }
 
@@ -408,6 +534,7 @@ int main(int argc, char** argv) {
         return -1;
     }
 
+    g_should_stop = 0;
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
@@ -416,23 +543,16 @@ int main(int argc, char** argv) {
     const char* lprnet8_path = argv[3];
     const char* input_path = argv[4];
     int save_interval = (argc == 6) ? atoi(argv[5]) : 0;
+    if (save_interval > 0) {
+        printf("Warning: frame saving is disabled while the dual-plane display path is active.\n");
+    }
 
     FrameProcessContext frame_ctx{};
     frame_ctx.frame_index = 0;
-    frame_ctx.save_interval = save_interval;
-    std::string s = input_path;
-    // 假设 s 是输入路径 "data/video.mp4"
-    std::string raw_path = s;
-    size_t last_slash = raw_path.find_last_of("/\\");
-    std::string filename = (last_slash == std::string::npos) ? raw_path : raw_path.substr(last_slash + 1);
-    size_t last_dot = filename.find_last_of('.');
-    if (last_dot != std::string::npos) {
-        filename = filename.substr(0, last_dot);
-    }
-    // 确保 frame_ctx.input_path 是 std::string 类型
-    frame_ctx.input_path = filename;
     frame_ctx.perf_total_frames = 0;
-    frame_ctx.perf_det_frames = 0;
+    frame_ctx.perf_total_input_frames = 0;
+    frame_ctx.perf_total_npu_jobs = 0;
+    frame_ctx.perf_display_dropped_frames = 0;
     frame_ctx.perf_total_lpr_count = 0;
     frame_ctx.perf_total_decode_ms = 0.0;
     frame_ctx.perf_total_convert_ms = 0.0;
@@ -449,11 +569,7 @@ int main(int argc, char** argv) {
     frame_ctx.yolo_input_busy[1] = false;
     frame_ctx.yolo_input_mems[0] = nullptr;
     frame_ctx.yolo_input_mems[1] = nullptr;
-    memset(&frame_ctx.save_rgb_frame, 0, sizeof(frame_ctx.save_rgb_frame));
-
-    if (save_interval > 0) {
-        ensure_result_dir("result");
-    }
+    frame_ctx.displayed_mpp_buffer = nullptr;
 
     // 1. 初始化Pipeline
     printf("\n========== Initializing Pipeline ==========\n");
@@ -482,6 +598,15 @@ int main(int argc, char** argv) {
     decoder.SetCallback(on_decoder_frame);
 
     // 3. 启动异步推理管线
+    {
+        std::lock_guard<std::mutex> lock(g_infer.mtx);
+        g_infer.jobs.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_display.mtx);
+        g_display.jobs.clear();
+    }
+    std::thread display_thread(display_thread_func, &frame_ctx);
     std::thread infer_thread(inference_thread_func, &frame_ctx);
 
     // 4. 阻塞式执行码流解析
@@ -490,6 +615,11 @@ int main(int argc, char** argv) {
 
     // 5. 终止逻辑与资源回收
     g_should_stop = 1;
+    g_infer.cv.notify_all();
+    g_display.cv.notify_all();
+    if (display_thread.joinable()) {
+        display_thread.join();
+    }
     if (infer_thread.joinable()) {
         infer_thread.join();
     }
@@ -499,31 +629,38 @@ int main(int argc, char** argv) {
         frame_ctx.drm_initialized = false;
     }
 
-    release_pipeline(&frame_ctx.pipeline_ctx);
+    if (frame_ctx.displayed_mpp_buffer) {
+        mpp_buffer_put(frame_ctx.displayed_mpp_buffer);
+        frame_ctx.displayed_mpp_buffer = nullptr;
+    }
 
     if (frame_ctx.yolo_input_mems[1]) {
+        if (frame_ctx.yolo_input_mems[0] && frame_ctx.pipeline_ctx.yolo_ctx.input_native_attrs) {
+            rknn_set_io_mem(frame_ctx.pipeline_ctx.yolo_ctx.rknn_ctx,
+                            frame_ctx.yolo_input_mems[0],
+                            &frame_ctx.pipeline_ctx.yolo_ctx.input_native_attrs[0]);
+        }
         rknn_destroy_mem(frame_ctx.pipeline_ctx.yolo_ctx.rknn_ctx, frame_ctx.yolo_input_mems[1]);
         frame_ctx.yolo_input_mems[1] = nullptr;
     }
 
-    if (frame_ctx.save_rgb_frame.virt_addr) {
-        free(frame_ctx.save_rgb_frame.virt_addr);
-        frame_ctx.save_rgb_frame.virt_addr = nullptr;
-    }
+    release_pipeline(&frame_ctx.pipeline_ctx);
 
     // 6. 输出性能分析报告
     if (frame_ctx.perf_total_frames > 0) {
         double run_sec = (double)(now_ms() - frame_ctx.perf_start_ms) / 1000.0;
         printf("\n========== Performance Summary ==========\n");
-        printf("Total Frames:        %llu\n", frame_ctx.perf_total_frames);
-        printf("System Throughput:   %.2f FPS\n", (double)frame_ctx.perf_total_frames / run_sec);
-        printf("NPU Inference FPS:   %.2f FPS\n", (double)frame_ctx.perf_det_frames / run_sec);
+        printf("MPP Output Frames:   %llu\n", frame_ctx.perf_total_input_frames);
+        printf("Displayed Frames:    %llu\n", frame_ctx.perf_total_frames);
+        printf("Display Drops:       %llu\n", frame_ctx.perf_display_dropped_frames);
+        printf("Display Throughput:  %.2f FPS\n", (double)frame_ctx.perf_total_frames / run_sec);
+        printf("NPU Inference FPS:   %.2f FPS\n", (double)frame_ctx.perf_total_npu_jobs / run_sec);
         printf("Total Plates Found:  %llu\n", frame_ctx.perf_total_lpr_count);
         printf("-----------------------------------------\n");
         printf("Avg E2E Latency:     %.2f ms/frame\n", frame_ctx.perf_total_end2end_ms / frame_ctx.perf_total_frames);
-        printf("Avg MPP Decode:      %.2f ms/frame\n", frame_ctx.perf_total_decode_ms / frame_ctx.perf_total_frames);
-        printf("Avg RGA Convert:     %.2f ms/frame\n", frame_ctx.perf_total_convert_ms / frame_ctx.perf_total_frames);
-        printf("Avg NPU Inference:   %.2f ms/frame\n", frame_ctx.perf_det_frames > 0 ? frame_ctx.perf_total_npu_infer_ms / frame_ctx.perf_det_frames : 0.0);
+        printf("Avg Decode Call:     %.2f ms/frame\n", frame_ctx.perf_total_input_frames > 0 ? frame_ctx.perf_total_decode_ms / frame_ctx.perf_total_input_frames : 0.0);
+        printf("Avg RGA Convert:     %.2f ms/frame\n", frame_ctx.perf_total_input_frames > 0 ? frame_ctx.perf_total_convert_ms / frame_ctx.perf_total_input_frames : 0.0);
+        printf("Avg NPU Inference:   %.2f ms/frame\n", frame_ctx.perf_total_npu_jobs > 0 ? frame_ctx.perf_total_npu_infer_ms / frame_ctx.perf_total_npu_jobs : 0.0);
         printf("Avg UI Drawing:      %.2f ms/frame\n", frame_ctx.perf_total_ui_drawing_ms / frame_ctx.perf_total_frames);
         printf("Avg DRM Present:     %.2f ms/frame\n", frame_ctx.perf_total_present_ms / frame_ctx.perf_total_frames);
         printf("=========================================\n");

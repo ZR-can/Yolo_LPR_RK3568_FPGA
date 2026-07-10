@@ -10,7 +10,6 @@ ENABLE_ASAN=0
 DISABLE_RGA=0
 SKIP_PUSH=0
 ADB_BIN="${ADB_BIN:-adb}"
-BOARD_ROOT="/userdata/rknn_yolov8_lpr_demo"
 
 show_usage() {
     cat <<EOF
@@ -74,6 +73,13 @@ fi
 TARGET_SDK="rknn_${BUILD_DEMO_NAME}_demo"
 INSTALL_DIR="${SCRIPT_DIR}/install/${TARGET_PLATFORM}/${TARGET_SDK}"
 BUILD_DIR="${SCRIPT_DIR}/build/build_${TARGET_SDK}_${TARGET_PLATFORM}_${BUILD_TYPE:-Release}"
+BOARD_ROOT="/userdata/${TARGET_SDK}"
+PICTURE_DIR="${INSTALL_DIR}/yolov8_lpr_picture_demo"
+VIDEO_DIR="${INSTALL_DIR}/yolov8_lpr_video_demo"
+PICTURE_BIN="${PICTURE_DIR}/yolov8_lpr_picture_demo"
+VIDEO_BIN="${VIDEO_DIR}/yolov8_lpr_video_demo"
+BOARD_PICTURE_BIN="${BOARD_ROOT}/yolov8_lpr_picture_demo/yolov8_lpr_picture_demo"
+BOARD_VIDEO_BIN="${BOARD_ROOT}/yolov8_lpr_video_demo/yolov8_lpr_video_demo"
 
 if command -v git >/dev/null 2>&1; then
     CURRENT_BRANCH=$(git -C "$SCRIPT_DIR" branch --show-current 2>/dev/null || true)
@@ -102,8 +108,24 @@ fi
 
 "$BUILD_SCRIPT" "${BUILD_ARGS[@]}"
 
+if [ ! -x "$PICTURE_BIN" ] || [ ! -x "$VIDEO_BIN" ]; then
+    echo "Expected picture or video executable is missing from: $INSTALL_DIR"
+    exit 1
+fi
+
+if [ ! -d "${VIDEO_DIR}/model" ]; then
+    echo "Video model directory is missing: ${VIDEO_DIR}/model"
+    exit 1
+fi
+
+MODEL_COUNT=$(find "${VIDEO_DIR}/model" -maxdepth 1 -type f -name '*.rknn' | wc -l)
+if [ "$MODEL_COUNT" -lt 3 ]; then
+    echo "Video deployment requires at least three RKNN models: ${VIDEO_DIR}/model"
+    exit 1
+fi
+
 if [ "$SKIP_PUSH" -eq 1 ]; then
-    echo "Build completed. Push skipped by -n."
+    echo "Build verified. Push skipped by -n."
     exit 0
 fi
 
@@ -119,7 +141,9 @@ echo "Pushing demo tree to device"
 "$ADB_BIN" push "$INSTALL_DIR" /userdata/
 
 echo "Restoring execute bits on device"
-"$ADB_BIN" shell "chmod +x ${BOARD_ROOT}/yolov8_lpr_picture_demo/yolov8_lpr_picture_demo"
-"$ADB_BIN" shell "chmod +x ${BOARD_ROOT}/yolov8_lpr_video_demo/yolov8_lpr_video_demo"
+"$ADB_BIN" shell "chmod +x ${BOARD_PICTURE_BIN} ${BOARD_VIDEO_BIN}"
 
-echo "Done. Manual runtime verification is still required."
+echo "Verifying pushed video entry and models"
+"$ADB_BIN" shell "test -x ${BOARD_VIDEO_BIN} && test -d ${BOARD_ROOT}/yolov8_lpr_video_demo/model"
+
+echo "Done. Video entry is src/main_video.cc; manual runtime verification is still required."

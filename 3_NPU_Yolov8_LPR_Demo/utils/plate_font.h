@@ -27,8 +27,7 @@ static const PlateCharMap plate_char_map[81] = {
     {" ", 80, 1}
 };
 
-extern const unsigned char plate_font_data[81][800];
-
+#ifdef PLATE_FONT_DATA_IMPLEMENTATION
 const unsigned char plate_font_data[81][800] = {
     // Index 0: '京'
     {
@@ -3514,5 +3513,8 @@ const unsigned char plate_font_data[81][800] = {
           0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0, 
     }
 };
+#else
+extern const unsigned char plate_font_data[81][800];
+#endif
 
 #endif // __PLATE_FONT_DATA_H__

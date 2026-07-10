@@ -11,7 +11,8 @@
 #define MPI_DEC_LOOP_COUNT          4
 #define MAX_FILE_NAME_LENGTH        256
 
-typedef void (*MppDecoderFrameCallback)(void* userdata, int width_stride, int height_stride, int width, int height, int format, int fd, void* data);
+typedef void (*MppDecoderFrameCallback)(void* userdata, int width_stride, int height_stride, int width, int height,
+                                        int format, int fd, void* data, MppBuffer buffer_ref);
 
 typedef struct
 {

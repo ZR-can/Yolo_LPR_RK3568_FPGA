@@ -5,6 +5,7 @@
 #include <math.h>
 #include "image_drawing.h"
 #include "font.h"
+#define PLATE_FONT_DATA_IMPLEMENTATION
 #include "plate_font.h"
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 #define min(a, b) (((a) < (b)) ? (a) : (b))
@@ -373,6 +374,124 @@ static unsigned int convert_color(unsigned int src_color, image_format_t dst_fmt
         break;
     }
     return dst_color;
+}
+
+static void blend_pixel(unsigned char* pixel, int channels, const unsigned char* color, unsigned char alpha)
+{
+    if (alpha == 0) {
+        return;
+    }
+
+    if (alpha == 255) {
+        pixel[0] = color[0];
+        pixel[1] = color[1];
+        pixel[2] = color[2];
+    } else {
+        pixel[0] = (unsigned char)((pixel[0] * (255 - alpha) + color[0] * alpha) / 255);
+        pixel[1] = (unsigned char)((pixel[1] * (255 - alpha) + color[1] * alpha) / 255);
+        pixel[2] = (unsigned char)((pixel[2] * (255 - alpha) + color[2] * alpha) / 255);
+    }
+
+    if (channels == 4) {
+        pixel[3] = 0xFF;
+    }
+}
+
+static void fill_rect_alpha_generic(unsigned char* pixels, int w, int h, int stride_bytes, int channels,
+                                    int rx, int ry, int rw, int rh, unsigned int color, unsigned char alpha)
+{
+    if (pixels == NULL || rw <= 0 || rh <= 0) {
+        return;
+    }
+
+    const unsigned char* pen_color = (const unsigned char*)&color;
+    int x0 = max(rx, 0);
+    int y0 = max(ry, 0);
+    int x1 = min(rx + rw, w);
+    int y1 = min(ry + rh, h);
+
+    for (int y = y0; y < y1; ++y) {
+        unsigned char* row = pixels + stride_bytes * y;
+        for (int x = x0; x < x1; ++x) {
+            blend_pixel(row + x * channels, channels, pen_color, alpha);
+        }
+    }
+}
+
+static void draw_rectangle_alpha_generic(unsigned char* pixels, int w, int h, int stride_bytes, int channels,
+                                         int rx, int ry, int rw, int rh, unsigned int color,
+                                         int thickness, unsigned char alpha)
+{
+    if (rw <= 0 || rh <= 0) {
+        return;
+    }
+
+    if (thickness == -1) {
+        fill_rect_alpha_generic(pixels, w, h, stride_bytes, channels, rx, ry, rw, rh, color, alpha);
+        return;
+    }
+
+    thickness = max(thickness, 1);
+    const int t0 = thickness / 2;
+    const int t1 = thickness - t0;
+
+    fill_rect_alpha_generic(pixels, w, h, stride_bytes, channels,
+                            rx - t0, ry - t0, rw + t0 + t1, thickness, color, alpha);
+    fill_rect_alpha_generic(pixels, w, h, stride_bytes, channels,
+                            rx - t0, ry + rh - t0, rw + t0 + t1, thickness, color, alpha);
+    fill_rect_alpha_generic(pixels, w, h, stride_bytes, channels,
+                            rx - t0, ry + t1, thickness, rh - t0 - t1, color, alpha);
+    fill_rect_alpha_generic(pixels, w, h, stride_bytes, channels,
+                            rx + rw - t0, ry + t1, thickness, rh - t0 - t1, color, alpha);
+}
+
+static void fill_rounded_rect_alpha_generic(unsigned char* pixels, int w, int h, int stride_bytes, int channels,
+                                            int rx, int ry, int rw, int rh, int radius,
+                                            unsigned int color, unsigned char alpha)
+{
+    if (pixels == NULL || rw <= 0 || rh <= 0) {
+        return;
+    }
+
+    radius = max(radius, 0);
+    radius = min(radius, min(rw, rh) / 2);
+    if (radius <= 0) {
+        fill_rect_alpha_generic(pixels, w, h, stride_bytes, channels, rx, ry, rw, rh, color, alpha);
+        return;
+    }
+
+    const unsigned char* pen_color = (const unsigned char*)&color;
+    int x0 = max(rx, 0);
+    int y0 = max(ry, 0);
+    int x1 = min(rx + rw, w);
+    int y1 = min(ry + rh, h);
+    int r2 = radius * radius;
+
+    for (int y = y0; y < y1; ++y) {
+        unsigned char* row = pixels + stride_bytes * y;
+        for (int x = x0; x < x1; ++x) {
+            int cx = x;
+            int cy = y;
+
+            if (x < rx + radius) {
+                cx = rx + radius;
+            } else if (x >= rx + rw - radius) {
+                cx = rx + rw - radius - 1;
+            }
+
+            if (y < ry + radius) {
+                cy = ry + radius;
+            } else if (y >= ry + rh - radius) {
+                cy = ry + rh - radius - 1;
+            }
+
+            int dx = x - cx;
+            int dy = y - cy;
+            if (dx * dx + dy * dy <= r2) {
+                blend_pixel(row + x * channels, channels, pen_color, alpha);
+            }
+        }
+    }
 }
 
 static void draw_rectangle_c1(unsigned char* pixels, int w, int h, int rx, int ry, int rw, int rh, unsigned int color,
@@ -1759,6 +1878,80 @@ void draw_rectangle(image_buffer_t* image, int rx, int ry, int rw, int rh, unsig
         break;
     default:
         printf("no support format %d", format);
+        break;
+    }
+}
+
+void draw_rectangle_alpha(image_buffer_t* image, int rx, int ry, int rw, int rh, unsigned int color,
+                          int thickness, unsigned char alpha)
+{
+    if (image == NULL || image->virt_addr == NULL || rw <= 0 || rh <= 0) {
+        return;
+    }
+
+    image_format_t format = image->format;
+    unsigned char* pixels = image->virt_addr;
+    int w = image->width;
+    int h = image->height;
+    unsigned int draw_color = convert_color(color, format);
+
+    switch (format)
+    {
+    case IMAGE_FORMAT_RGB888:
+        {
+            int stride_bytes = (image->width_stride > 0) ? (image->width_stride * 3) : (w * 3);
+            draw_rectangle_alpha_generic(pixels, w, h, stride_bytes, 3,
+                                         rx, ry, rw, rh, draw_color, thickness, alpha);
+        }
+        break;
+    case IMAGE_FORMAT_RGBA8888:
+        {
+            int stride_bytes = (image->width_stride > 0) ? (image->width_stride * 4) : (w * 4);
+            draw_rectangle_alpha_generic(pixels, w, h, stride_bytes, 4,
+                                         rx, ry, rw, rh, draw_color, thickness, alpha);
+        }
+        break;
+    default:
+        if (alpha >= 128) {
+            draw_rectangle(image, rx, ry, rw, rh, color, thickness);
+        }
+        break;
+    }
+}
+
+void draw_filled_rounded_rectangle_alpha(image_buffer_t* image, int rx, int ry, int rw, int rh,
+                                         int radius, unsigned int color, unsigned char alpha)
+{
+    if (image == NULL || image->virt_addr == NULL || rw <= 0 || rh <= 0) {
+        return;
+    }
+
+    image_format_t format = image->format;
+    unsigned char* pixels = image->virt_addr;
+    int w = image->width;
+    int h = image->height;
+    unsigned int draw_color = convert_color(color, format);
+
+    switch (format)
+    {
+    case IMAGE_FORMAT_RGB888:
+        {
+            int stride_bytes = (image->width_stride > 0) ? (image->width_stride * 3) : (w * 3);
+            fill_rounded_rect_alpha_generic(pixels, w, h, stride_bytes, 3,
+                                            rx, ry, rw, rh, radius, draw_color, alpha);
+        }
+        break;
+    case IMAGE_FORMAT_RGBA8888:
+        {
+            int stride_bytes = (image->width_stride > 0) ? (image->width_stride * 4) : (w * 4);
+            fill_rounded_rect_alpha_generic(pixels, w, h, stride_bytes, 4,
+                                            rx, ry, rw, rh, radius, draw_color, alpha);
+        }
+        break;
+    default:
+        if (alpha >= 128) {
+            draw_rectangle(image, rx, ry, rw, rh, color, -1);
+        }
         break;
     }
 }

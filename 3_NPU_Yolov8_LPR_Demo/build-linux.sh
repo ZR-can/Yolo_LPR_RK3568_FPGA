@@ -195,16 +195,20 @@ cmake ../../${BUILD_DEMO_PATH} \
 make -j4
 make install
 
-# Check if there is a rknn model in the install directory
+# Check deployment artifacts for both video planes and the RGA overlay path.
 suffix=".rknn"
 shopt -s nullglob
 if [ -d "$INSTALL_DIR" ]; then
     # 修改这里的路径，检查 picture_demo 下的 model 是否存在即可
-    files=("$INSTALL_DIR/yolov8_lpr_picture_demo/model/"/*"$suffix")
+    files=("$INSTALL_DIR/yolov8_lpr_video_demo/model/"/*"$suffix")
     shopt -u nullglob
 
     if [ ${#files[@]} -le 0 ]; then
-        echo -e "\e[91mThe RKNN model can not be found in \"$INSTALL_DIR/yolov8_lpr_picture_demo/model\", please check!\e[0m"
+        echo -e "\e[91mThe RKNN model can not be found in \"$INSTALL_DIR/yolov8_lpr_video_demo/model\", please check!\e[0m"
+    fi
+
+    if [ ! -x "$INSTALL_DIR/yolov8_lpr_video_demo/yolov8_lpr_video_demo" ]; then
+        echo -e "\e[91mThe RGA dual-plane video executable is missing from the install directory.\e[0m"
     fi
 else
     echo -e "\e[91mInstall directory \"$INSTALL_DIR\" does not exist, please check!\e[0m"
