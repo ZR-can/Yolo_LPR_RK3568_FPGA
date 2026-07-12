@@ -46,6 +46,7 @@ typedef struct FrameProcessContext {
     unsigned long long perf_total_input_frames; // MPP 输出帧数
     unsigned long long perf_total_npu_jobs;
     unsigned long long perf_display_dropped_frames;
+    unsigned long long perf_overlay_failures;
     unsigned long long perf_total_lpr_count;   // 总识别车牌数
     double perf_total_decode_ms;       // 总解码耗时
     double perf_total_convert_ms;      // 总 RGA 预处理(NV12->RGB)耗时
@@ -367,7 +368,11 @@ static void process_one_frame(FrameProcessContext* ctx, image_buffer_t* ui_buffe
     }
 
     if (ctx->overlay_renderer.Render(ui_buffer, draw_results) != 0) {
-        printf("RGA overlay render failed\n");
+        ctx->perf_overlay_failures++;
+        if (ctx->perf_overlay_failures == 1 || (ctx->perf_overlay_failures % 120) == 0) {
+            fprintf(stderr, "RGA overlay frame render failed (%llu failures)\n",
+                    ctx->perf_overlay_failures);
+        }
     }
 
     ctx->perf_total_ui_drawing_ms += total_timer.get_elapsed_ms();
@@ -505,17 +510,43 @@ static int decode_raw_h26x_file(const char* input_path, MppDecoder* decoder, Fra
 
     while (!g_should_stop) {
         size_t n = fread(pkt, 1, FILE_READ_CHUNK, fp);
-        if (n == 0) break;
+        if (n == 0) {
+            if (ferror(fp)) {
+                fprintf(stderr, "Failed to read video stream: %s\n", input_path);
+                free(pkt);
+                fclose(fp);
+                return -1;
+            }
+            break;
+        }
 
-        int eos = feof(fp) ? 1 : 0;
         PerfTimer decode_timer;
         decode_timer.start();
-        decoder->Decode(pkt, (int)n, eos);
+        int decode_ret = decoder->Decode(pkt, (int)n, 0);
         if (ctx) {
             ctx->perf_total_decode_ms += decode_timer.get_elapsed_ms();
         }
-        
-        if (eos) break;
+        if (decode_ret != MPP_OK) {
+            fprintf(stderr, "MPP Decode failed: %d\n", decode_ret);
+            free(pkt);
+            fclose(fp);
+            return -1;
+        }
+    }
+
+    if (!g_should_stop) {
+        PerfTimer eos_timer;
+        eos_timer.start();
+        int eos_ret = decoder->Decode(NULL, 0, 1);
+        if (ctx) {
+            ctx->perf_total_decode_ms += eos_timer.get_elapsed_ms();
+        }
+        if (eos_ret != MPP_OK) {
+            fprintf(stderr, "MPP EOS drain failed: %d\n", eos_ret);
+            free(pkt);
+            fclose(fp);
+            return -1;
+        }
     }
 
     free(pkt);
@@ -553,6 +584,7 @@ int main(int argc, char** argv) {
     frame_ctx.perf_total_input_frames = 0;
     frame_ctx.perf_total_npu_jobs = 0;
     frame_ctx.perf_display_dropped_frames = 0;
+    frame_ctx.perf_overlay_failures = 0;
     frame_ctx.perf_total_lpr_count = 0;
     frame_ctx.perf_total_decode_ms = 0.0;
     frame_ctx.perf_total_convert_ms = 0.0;
@@ -594,7 +626,16 @@ int main(int argc, char** argv) {
     MppDecoder decoder;
     
     printf("\n========== Initializing MPP Decoder ==========\n");
-    decoder.Init(video_type, frame_ctx.target_fps, &frame_ctx);
+    ret = decoder.Init(video_type, frame_ctx.target_fps, &frame_ctx);
+    if (ret != 1) {
+        fprintf(stderr, "MPP decoder initialization failed: %d\n", ret);
+        if (frame_ctx.yolo_input_mems[1] != NULL) {
+            rknn_destroy_mem(frame_ctx.pipeline_ctx.yolo_ctx.rknn_ctx, frame_ctx.yolo_input_mems[1]);
+            frame_ctx.yolo_input_mems[1] = NULL;
+        }
+        release_pipeline(&frame_ctx.pipeline_ctx);
+        return -1;
+    }
     decoder.SetCallback(on_decoder_frame);
 
     // 3. 启动异步推理管线
@@ -611,7 +652,10 @@ int main(int argc, char** argv) {
 
     // 4. 阻塞式执行码流解析
     printf("\n========== Starting Video Decoding ==========\n");
-    decode_raw_h26x_file(input_path, &decoder, &frame_ctx);
+    int decode_result = decode_raw_h26x_file(input_path, &decoder, &frame_ctx);
+    if (decode_result != 0) {
+        fprintf(stderr, "Video decode stopped because of an MPP error.\n");
+    }
 
     // 5. 终止逻辑与资源回收
     g_should_stop = 1;
@@ -647,18 +691,35 @@ int main(int argc, char** argv) {
     release_pipeline(&frame_ctx.pipeline_ctx);
 
     // 6. 输出性能分析报告
+    MppDecoderStats decoder_stats = decoder.GetStats();
     if (frame_ctx.perf_total_frames > 0) {
         double run_sec = (double)(now_ms() - frame_ctx.perf_start_ms) / 1000.0;
         printf("\n========== Performance Summary ==========\n");
         printf("MPP Output Frames:   %llu\n", frame_ctx.perf_total_input_frames);
         printf("Displayed Frames:    %llu\n", frame_ctx.perf_total_frames);
         printf("Display Drops:       %llu\n", frame_ctx.perf_display_dropped_frames);
+        printf("Overlay Failures:    %llu\n", frame_ctx.perf_overlay_failures);
         printf("Display Throughput:  %.2f FPS\n", (double)frame_ctx.perf_total_frames / run_sec);
         printf("NPU Inference FPS:   %.2f FPS\n", (double)frame_ctx.perf_total_npu_jobs / run_sec);
         printf("Total Plates Found:  %llu\n", frame_ctx.perf_total_lpr_count);
         printf("-----------------------------------------\n");
         printf("Avg E2E Latency:     %.2f ms/frame\n", frame_ctx.perf_total_end2end_ms / frame_ctx.perf_total_frames);
         printf("Avg Decode Call:     %.2f ms/frame\n", frame_ctx.perf_total_input_frames > 0 ? frame_ctx.perf_total_decode_ms / frame_ctx.perf_total_input_frames : 0.0);
+        printf("Avg MPP Callback:    %.2f ms/frame\n", decoder_stats.callback_count > 0 ? (double)decoder_stats.callback_time_ms / decoder_stats.callback_count : 0.0);
+        printf("Avg MPP Put Packet:  %.2f ms/frame\n", frame_ctx.perf_total_input_frames > 0 ? (double)decoder_stats.put_packet_time_ms / frame_ctx.perf_total_input_frames : 0.0);
+        printf("Avg MPP Get Frame:   %.2f ms/frame\n", frame_ctx.perf_total_input_frames > 0 ? (double)decoder_stats.get_frame_time_ms / frame_ctx.perf_total_input_frames : 0.0);
+        printf("Avg MPP Timeout Wait:%.2f ms/frame\n", frame_ctx.perf_total_input_frames > 0 ? (double)decoder_stats.timeout_sleep_ms / frame_ctx.perf_total_input_frames : 0.0);
+        printf("MPP Input Retries:   %llu\n", decoder_stats.input_retry_count);
+        printf("MPP Buffer Full:     %llu\n", decoder_stats.input_buffer_full_count);
+        printf("MPP Input Timeouts:  %llu\n", decoder_stats.input_timeout_count);
+        printf("Avg MPP Retry Wait:  %.2f ms/frame\n", frame_ctx.perf_total_input_frames > 0 ? (double)decoder_stats.input_retry_sleep_ms / frame_ctx.perf_total_input_frames : 0.0);
+        printf("MPP Retry Peak:      %llu\n", decoder_stats.max_input_retry_streak);
+        printf("MPP Input Stalls:    %llu\n", decoder_stats.input_stall_count);
+        printf("MPP Input Aborts:    %llu\n", decoder_stats.input_abort_count);
+        printf("MPP Input Errors:    %llu\n", decoder_stats.input_fatal_error_count);
+        printf("MPP Output Errors:   %llu\n", decoder_stats.output_error_count);
+        printf("Avg MPP Pace Sleep:  %.2f ms/frame\n", frame_ctx.perf_total_input_frames > 0 ? (double)decoder_stats.pacing_sleep_ms / frame_ctx.perf_total_input_frames : 0.0);
+        printf("MPP Buffer Peak:     %zu KiB\n", decoder_stats.max_buffer_group_usage / 1024);
         printf("Avg RGA Convert:     %.2f ms/frame\n", frame_ctx.perf_total_input_frames > 0 ? frame_ctx.perf_total_convert_ms / frame_ctx.perf_total_input_frames : 0.0);
         printf("Avg NPU Inference:   %.2f ms/frame\n", frame_ctx.perf_total_npu_jobs > 0 ? frame_ctx.perf_total_npu_infer_ms / frame_ctx.perf_total_npu_jobs : 0.0);
         printf("Avg UI Drawing:      %.2f ms/frame\n", frame_ctx.perf_total_ui_drawing_ms / frame_ctx.perf_total_frames);
@@ -666,5 +727,5 @@ int main(int argc, char** argv) {
         printf("=========================================\n");
     }
 
-    return 0;
+    return decode_result == 0 ? 0 : -1;
 }

@@ -295,6 +295,21 @@ static std::vector<std::string> tracker_parse_utf8(const std::string& str) {
     return chars;
 }
 
+static bool is_valid_plate_letter(const std::string& ch) {
+    static const std::string kValidLetters = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+    return kValidLetters.find(ch) != std::string::npos;
+}
+
+static bool is_valid_plate_alphanumeric(const std::string& ch) {
+    static const std::string kValidDigits = "0123456789";
+    return is_valid_plate_letter(ch) || kValidDigits.find(ch) != std::string::npos;
+}
+
+static bool is_special_plate_tail(const std::string& ch) {
+    static const std::string kSpecialTails = "警学港澳领使";
+    return kSpecialTails.find(ch) != std::string::npos;
+}
+
 SimplePlateTracker::SimplePlateTracker() = default;
 
 void SimplePlateTracker::reset() {
@@ -305,23 +320,34 @@ void SimplePlateTracker::reset() {
 
 bool SimplePlateTracker::is_valid_plate(const std::string& plate, const std::string& plate_type) const {
     std::vector<std::string> chars = tracker_parse_utf8(plate);
-    if (chars.empty()) return false;
-
-    size_t expected_len = (plate_type == "绿") ? 8 : 7;
+    const bool is_green_plate = plate_type == "绿";
+    const size_t expected_len = is_green_plate ? 8 : 7;
     if (chars.size() != expected_len) {
         return false;
     }
 
-    const std::string valid_provinces = "京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼";
-    if (valid_provinces.find(chars[0]) == std::string::npos) {
+    static const std::string kValidProvinces = "京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼";
+    if (kValidProvinces.find(chars[0]) == std::string::npos) {
+        return false;
+    }
+    if (!is_valid_plate_letter(chars[1])) {
         return false;
     }
 
-    const std::string valid_letters = "ABCDEFGHJKLMNPQRSTUVWXYZ"; //暂时省略 I 和 O，避免与数字混淆
-    if (valid_letters.find(chars[1]) == std::string::npos) {
-        return false;
+    for (size_t i = 2; i < chars.size(); ++i) {
+        const bool is_last_char = i == chars.size() - 1;
+        if (!is_green_plate && is_last_char && is_special_plate_tail(chars[i])) {
+            continue;
+        }
+        if (!is_valid_plate_alphanumeric(chars[i])) {
+            return false;
+        }
     }
 
+    if (is_green_plate && chars[2] != "D" && chars[2] != "F" &&
+        chars.back() != "D" && chars.back() != "F") {
+        return false;
+    }
     return true;
 }
 
@@ -521,7 +547,8 @@ void SimplePlateTracker::predict(int frame_id, std::vector<PipelineResult>& out_
             res.text_color = track.text_color;
 
             std::string final_plate = get_best_voted_plate(track.plate_votes);
-            res.plate_name = final_plate.empty() ? ":" : final_plate;
+            res.has_valid_plate_text = !final_plate.empty();
+            res.plate_name = final_plate;
             
             out_results.push_back(res);
         }
