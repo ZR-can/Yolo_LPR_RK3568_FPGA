@@ -19,6 +19,7 @@ struct PipelineResult {
     int left, top, right, bottom;
     float confidence;          // YOLO 框置信度
     float text_confidence;     // LPRNet 字符识别置信度
+    bool has_valid_plate_text = false;
     std::string plate_name;
     std::string plate_type;
     unsigned int box_color;

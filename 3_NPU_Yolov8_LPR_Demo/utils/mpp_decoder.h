@@ -16,6 +16,26 @@ typedef void (*MppDecoderFrameCallback)(void* userdata, int width_stride, int he
 
 typedef struct
 {
+    unsigned long long callback_count;
+    unsigned long long callback_time_ms;
+    unsigned long long put_packet_time_ms;
+    unsigned long long get_frame_time_ms;
+    unsigned long long timeout_sleep_ms;
+    unsigned long long input_retry_count;
+    unsigned long long input_buffer_full_count;
+    unsigned long long input_timeout_count;
+    unsigned long long input_retry_sleep_ms;
+    unsigned long long input_stall_count;
+    unsigned long long input_abort_count;
+    unsigned long long max_input_retry_streak;
+    unsigned long long input_fatal_error_count;
+    unsigned long long output_error_count;
+    unsigned long long pacing_sleep_ms;
+    size_t max_buffer_group_usage;
+} MppDecoderStats;
+
+typedef struct
+{
     MppCtx          ctx;
     MppApi          *mpi;
     RK_U32          eos;
@@ -43,6 +63,7 @@ public:
     int SetCallback(MppDecoderFrameCallback callback);
     int Decode(uint8_t* pkt_data, int pkt_size, int pkt_eos);
     int Reset();
+    MppDecoderStats GetStats() const;
 private:
     // base flow context
     MpiCmd mpi_cmd      = MPP_CMD_BASE;
@@ -60,6 +81,7 @@ private:
     MppDecoderFrameCallback callback;
     int fps = -1;
     unsigned long last_frame_time_ms = 0;
+    MppDecoderStats stats = {};
 
     void* userdata = NULL;
 };

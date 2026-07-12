@@ -360,7 +360,11 @@ int RgaOverlayRenderer::Render(image_buffer_t* ui_buffer, const std::vector<Pipe
         if (!DrawRectangle(ui_buffer, left - 2, top - 2, box_width + 4, box_height + 4, kBlackAlpha, 2) ||
             !DrawRectangle(ui_buffer, left - 1, top - 1, box_width + 2, box_height + 2, kWhite, 2) ||
             !DrawRectangle(ui_buffer, left, top, box_width, box_height, kMagenta, 4)) {
-            return -1;
+            continue;
+        }
+
+        if (!result.has_valid_plate_text) {
+            continue;
         }
 
         const LabelSprite& sprite = GetLabelSprite(result);
@@ -376,7 +380,7 @@ int RgaOverlayRenderer::Render(image_buffer_t* ui_buffer, const std::vector<Pipe
         }
         label_y = Clamp(label_y, 0, max_label_y);
         if (!BlendSprite(sprite, ui_buffer, label_x, label_y)) {
-            return -1;
+            continue;
         }
     }
     return 0;

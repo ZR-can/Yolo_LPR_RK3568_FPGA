@@ -12,6 +12,11 @@
 #define LOGD(...) ((void)0)
 #endif
 
+static const unsigned long kInputRetrySleepUs = 1000;
+static const unsigned long kInputStallWarningMs = 1000;
+static const unsigned long kInputStallAbortMs = 5000;
+static const unsigned long kEosDrainLimitMs = 1000;
+
 static unsigned long GetCurrentTimeMS() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -24,6 +29,10 @@ MppDecoder::MppDecoder()
 }
 
 MppDecoder::~MppDecoder() {
+    if (packet) {
+        mpp_packet_deinit(&packet);
+        packet = NULL;
+    }
     if (loop_data.packet) {
         mpp_packet_deinit(&loop_data.packet);
         loop_data.packet = NULL;
@@ -35,6 +44,9 @@ MppDecoder::~MppDecoder() {
     if (mpp_ctx) {
         mpp_destroy(mpp_ctx);
         mpp_ctx = NULL;
+        loop_data.ctx = NULL;
+        loop_data.mpi = NULL;
+        mpp_mpi = NULL;
     }
 
     if (loop_data.frm_grp) {
@@ -49,6 +61,7 @@ int MppDecoder::Init(int video_type, int fps, void* userdata)
     this->userdata = userdata;
     this->fps = fps;
     this->last_frame_time_ms = 0;
+    memset(&this->stats, 0, sizeof(this->stats));
     if(video_type == 264) {
         mpp_type  = MPP_VIDEO_CodingAVC;
     } else if (video_type == 265) {
@@ -63,25 +76,54 @@ int MppDecoder::Init(int video_type, int fps, void* userdata)
 
     MppDecCfg cfg       = NULL;
 
-    MppCtx mpp_ctx          = NULL;
-    ret = mpp_create(&mpp_ctx, &mpp_mpi);
+    MppCtx decoder_ctx = NULL;
+    ret = mpp_create(&decoder_ctx, &mpp_mpi);
     if (MPP_OK != ret) {
         LOGD("mpp_create failed ");
-        return 0;
+        mpp_mpi = NULL;
+        return -1;
+    }
+    this->mpp_ctx = decoder_ctx;
+
+    auto cleanup_init = [&]() {
+        if (cfg != NULL) {
+            mpp_dec_cfg_deinit(cfg);
+            cfg = NULL;
+        }
+        if (this->mpp_ctx != NULL) {
+            mpp_destroy(this->mpp_ctx);
+            this->mpp_ctx = NULL;
+        }
+        this->mpp_mpi = NULL;
+        memset(&loop_data, 0, sizeof(loop_data));
+    };
+
+    RK_U32 parser_split_mode = need_split;
+    ret = mpp_mpi->control(decoder_ctx, MPP_DEC_SET_PARSER_SPLIT_MODE, &parser_split_mode);
+    if (ret) {
+        fprintf(stderr, "MPP_DEC_SET_PARSER_SPLIT_MODE failed: %d\n", ret);
     }
 
-    ret = mpp_init(mpp_ctx, MPP_CTX_DEC, mpp_type);
+    RK_U32 parser_fast_mode = 1;
+    ret = mpp_mpi->control(decoder_ctx, MPP_DEC_SET_PARSER_FAST_MODE, &parser_fast_mode);
     if (ret) {
-        LOGD("%p mpp_init failed ", mpp_ctx);
+        fprintf(stderr, "MPP_DEC_SET_PARSER_FAST_MODE failed: %d\n", ret);
+    }
+
+    ret = mpp_init(decoder_ctx, MPP_CTX_DEC, mpp_type);
+    if (ret) {
+        LOGD("%p mpp_init failed ", decoder_ctx);
+        cleanup_init();
         return -1;
     }
 
     mpp_dec_cfg_init(&cfg);
 
     /* get default config from decoder context */
-    ret = mpp_mpi->control(mpp_ctx, MPP_DEC_GET_CFG, cfg);
+    ret = mpp_mpi->control(decoder_ctx, MPP_DEC_GET_CFG, cfg);
     if (ret) {
-        LOGD("%p failed to get decoder cfg ret %d ", mpp_ctx, ret);
+        LOGD("%p failed to get decoder cfg ret %d ", decoder_ctx, ret);
+        cleanup_init();
         return -1;
     }
 
@@ -91,19 +133,32 @@ int MppDecoder::Init(int video_type, int fps, void* userdata)
      */
     ret = mpp_dec_cfg_set_u32(cfg, "base:split_parse", need_split);
     if (ret) {
-        LOGD("%p failed to set split_parse ret %d ", mpp_ctx, ret);
+        LOGD("%p failed to set split_parse ret %d ", decoder_ctx, ret);
+        cleanup_init();
         return -1;
     }
 
-    ret = mpp_mpi->control(mpp_ctx, MPP_DEC_SET_CFG, cfg);
+    ret = mpp_mpi->control(decoder_ctx, MPP_DEC_SET_CFG, cfg);
     if (ret) {
-        LOGD("%p failed to set cfg %p ret %d ", mpp_ctx, cfg, ret);
+        LOGD("%p failed to set cfg %p ret %d ", decoder_ctx, cfg, ret);
+        cleanup_init();
         return -1;
     }
 
     mpp_dec_cfg_deinit(cfg);
+    cfg = NULL;
 
-    loop_data.ctx            = mpp_ctx;
+    RK_S64 timeout = MPP_TIMEOUT_NON_BLOCK;
+    ret = mpp_mpi->control(decoder_ctx, MPP_SET_INPUT_TIMEOUT, &timeout);
+    if (ret) {
+        fprintf(stderr, "MPP_SET_INPUT_TIMEOUT failed: %d\n", ret);
+    }
+    ret = mpp_mpi->control(decoder_ctx, MPP_SET_OUTPUT_TIMEOUT, &timeout);
+    if (ret) {
+        fprintf(stderr, "MPP_SET_OUTPUT_TIMEOUT failed: %d\n", ret);
+    }
+
+    loop_data.ctx            = decoder_ctx;
     loop_data.mpi            = mpp_mpi;
     loop_data.eos            = 0;
     loop_data.packet_size    = packet_size;
@@ -113,10 +168,16 @@ int MppDecoder::Init(int video_type, int fps, void* userdata)
 }
 
 int MppDecoder::Reset() {
-    if (mpp_mpi != NULL) {
-        mpp_mpi->reset(mpp_ctx);
+    if (mpp_mpi != NULL && mpp_ctx != NULL) {
+        return mpp_mpi->reset(mpp_ctx);
     }
-    return 0;
+    return -1;
+}
+
+MppDecoderStats MppDecoder::GetStats() const {
+    MppDecoderStats result = stats;
+    result.max_buffer_group_usage = loop_data.max_usage;
+    return result;
 }
 
 int MppDecoder::Decode(uint8_t* pkt_data, int pkt_size, int pkt_eos)
@@ -125,8 +186,14 @@ int MppDecoder::Decode(uint8_t* pkt_data, int pkt_size, int pkt_eos)
     RK_U32 pkt_done = 0;
     RK_U32 err_info = 0;
     MPP_RET ret = MPP_OK;
+    MPP_RET fatal_ret = MPP_OK;
     MppCtx ctx  = data->ctx;
     MppApi *mpi = data->mpi;
+    unsigned long input_stall_begin_ms = 0;
+    unsigned long input_retry_streak = 0;
+    bool input_stall_reported = false;
+    unsigned long eos_wait_begin_ms = 0;
+    bool eos_seen = false;
 
     size_t read_size = 0;
     size_t packet_size = data->packet_size;
@@ -135,6 +202,9 @@ int MppDecoder::Decode(uint8_t* pkt_data, int pkt_size, int pkt_eos)
 
     if (packet == NULL) {
         ret = mpp_packet_init(&packet, NULL, 0);
+        if (ret != MPP_OK) {
+            return ret;
+        }
     }
 
     ///////////////////////////////////////////////
@@ -149,11 +219,30 @@ int MppDecoder::Decode(uint8_t* pkt_data, int pkt_size, int pkt_eos)
     do {
 
         RK_S32 times = 5;
+        bool decoded_frame = false;
         // send the packet first if packet is not done
         if (!pkt_done) {
+            unsigned long put_begin_ms = GetCurrentTimeMS();
             ret = mpi->decode_put_packet(ctx, packet);
-            if (MPP_OK == ret)
+            stats.put_packet_time_ms += GetCurrentTimeMS() - put_begin_ms;
+            if (MPP_OK == ret) {
                 pkt_done = 1;
+                input_stall_begin_ms = 0;
+                input_retry_streak = 0;
+                input_stall_reported = false;
+            } else if (ret == MPP_ERR_BUFFER_FULL || ret == MPP_ERR_TIMEOUT) {
+                stats.input_retry_count++;
+                if (ret == MPP_ERR_BUFFER_FULL) {
+                    stats.input_buffer_full_count++;
+                } else {
+                    stats.input_timeout_count++;
+                }
+            } else {
+                stats.input_fatal_error_count++;
+                fprintf(stderr, "decode_put_packet failed: %d\n", ret);
+                mpp_packet_deinit(&packet);
+                return ret;
+            }
         }
         // then get all available frame and release
         do {
@@ -161,10 +250,13 @@ int MppDecoder::Decode(uint8_t* pkt_data, int pkt_size, int pkt_eos)
             RK_U32 frm_eos = 0;
 
             try_again:
+            unsigned long get_begin_ms = GetCurrentTimeMS();
             ret = mpi->decode_get_frame(ctx, &frame);
+            stats.get_frame_time_ms += GetCurrentTimeMS() - get_begin_ms;
             if (MPP_ERR_TIMEOUT == ret) {
                 if (times > 0) {
                     times--;
+                    stats.timeout_sleep_ms += 2;
                     usleep(2000);
                     goto try_again;
                 }
@@ -173,6 +265,10 @@ int MppDecoder::Decode(uint8_t* pkt_data, int pkt_size, int pkt_eos)
 
             if (MPP_OK != ret) {
                 LOGD("decode_get_frame failed ret %d ", ret);
+                if (ret != MPP_ERR_TIMEOUT) {
+                    stats.output_error_count++;
+                    fatal_ret = ret;
+                }
                 break;
             }
 
@@ -258,8 +354,11 @@ int MppDecoder::Decode(uint8_t* pkt_data, int pkt_size, int pkt_eos)
                         int fd = mpp_buffer_get_fd(buffer);
                         LOGD("data_vir=%p fd=%d ", data_vir, fd);
                         if (mpp_buffer_inc_ref(buffer) == MPP_OK) {
+                            unsigned long callback_begin_ms = GetCurrentTimeMS();
                             callback(this->userdata, hor_stride, ver_stride, hor_width, ver_height,
                                      format, fd, data_vir, buffer);
+                            stats.callback_count++;
+                            stats.callback_time_ms += GetCurrentTimeMS() - callback_begin_ms;
                         } else {
                             LOGD("mpp_buffer_inc_ref failed for display callback");
                         }
@@ -268,6 +367,7 @@ int MppDecoder::Decode(uint8_t* pkt_data, int pkt_size, int pkt_eos)
                     long time_gap = 1000/this->fps - (cur_time_ms - this->last_frame_time_ms);
                     LOGD("time_gap=%ld", time_gap);
                     if (time_gap > 0) {
+                        stats.pacing_sleep_ms += time_gap;
                         usleep(time_gap * 1000);
                     }
                     this->last_frame_time_ms = GetCurrentTimeMS();
@@ -284,6 +384,7 @@ int MppDecoder::Decode(uint8_t* pkt_data, int pkt_size, int pkt_eos)
                 // &frame_pre=&frame;
 
                 get_frm = 1;
+                decoded_frame = true;
             }
 
             // try get runtime frame memory usage
@@ -301,6 +402,7 @@ int MppDecoder::Decode(uint8_t* pkt_data, int pkt_size, int pkt_eos)
 
             if (frm_eos) {
                 LOGD("found last frame ");
+                eos_seen = true;
                 break;
             }
 
@@ -314,6 +416,31 @@ int MppDecoder::Decode(uint8_t* pkt_data, int pkt_size, int pkt_eos)
             break;
         } while (1);
 
+        if (fatal_ret != MPP_OK) {
+            break;
+        }
+
+        if (ret != MPP_OK && ret != MPP_ERR_TIMEOUT) {
+            stats.output_error_count++;
+            fatal_ret = ret;
+            break;
+        }
+
+        if (pkt_eos && pkt_done && !eos_seen) {
+            if (eos_wait_begin_ms == 0) {
+                eos_wait_begin_ms = GetCurrentTimeMS();
+            }
+            if (GetCurrentTimeMS() - eos_wait_begin_ms >= kEosDrainLimitMs) {
+                stats.output_error_count++;
+                fprintf(stderr, "MPP EOS drain timed out after %lu ms\n",
+                        GetCurrentTimeMS() - eos_wait_begin_ms);
+                fatal_ret = MPP_ERR_TIMEOUT;
+                break;
+            }
+            usleep(kInputRetrySleepUs);
+            continue;
+        }
+
         if (data->frame_num > 0 && data->frame_count >= data->frame_num) {
             data->eos = 1;
             LOGD("reach max frame number %d ", data->frame_count);
@@ -323,18 +450,46 @@ int MppDecoder::Decode(uint8_t* pkt_data, int pkt_size, int pkt_eos)
         if (pkt_done)
             break;
 
-        /*
-         * why sleep here:
-         * mpi->decode_put_packet will failed when packet in internal queue is
-         * full,waiting the package is consumed .Usually hardware decode one
-         * frame which resolution is 1080p needs 2 ms,so here we sleep 3ms
-         * * is enough.
-         */
-        usleep(3*1000);
+        if (decoded_frame) {
+            input_stall_begin_ms = 0;
+            input_retry_streak = 0;
+            input_stall_reported = false;
+            continue;
+        }
+
+        input_retry_streak++;
+        if (input_retry_streak > stats.max_input_retry_streak) {
+            stats.max_input_retry_streak = input_retry_streak;
+        }
+
+        if (input_stall_begin_ms == 0) {
+            input_stall_begin_ms = GetCurrentTimeMS();
+        }
+        unsigned long input_stall_elapsed_ms = GetCurrentTimeMS() - input_stall_begin_ms;
+        if (!input_stall_reported && input_stall_elapsed_ms >= kInputStallWarningMs) {
+            stats.input_stall_count++;
+            input_stall_reported = true;
+            fprintf(stderr, "MPP input backlog for %lu ms after %lu retries; continuing\n",
+                    input_stall_elapsed_ms, input_retry_streak);
+        }
+        if (input_stall_elapsed_ms >= kInputStallAbortMs) {
+            stats.input_abort_count++;
+            fprintf(stderr, "MPP input stalled for %lu ms after %lu retries\n",
+                    input_stall_elapsed_ms, input_retry_streak);
+            ret = MPP_ERR_TIMEOUT;
+            break;
+        }
+
+        unsigned long retry_sleep_begin_ms = GetCurrentTimeMS();
+        usleep(kInputRetrySleepUs);
+        stats.input_retry_sleep_ms += GetCurrentTimeMS() - retry_sleep_begin_ms;
     } while (1);
     mpp_packet_deinit(&packet);
 
-    return ret;
+    if (fatal_ret != MPP_OK) {
+        return fatal_ret;
+    }
+    return pkt_done ? MPP_OK : ret;
 }
 
 int MppDecoder::SetCallback(MppDecoderFrameCallback callback) {

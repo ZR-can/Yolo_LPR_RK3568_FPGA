@@ -8,6 +8,11 @@ FPGA 侧的 PCIe 预处理链路仍在后续开发阶段，当前 README 不把�
 
 ## 开发记录
 
+### 2026-07-12 车牌文字显示校验
+
+- 视频路径的车牌投票校验已补全为逐位规则：普通牌为“省份 + 字母 + 字母/数字”，末位保留既有的“警、学、港、澳、领、使”特殊尾标；绿牌为“省份 + 字母 + 6 位字母/数字”，且第 3 位或末位必须为 `D/F`。因此 `津E黑S使云2` 等含非法中文字符的结果不会进入投票池。
+- 跟踪目标未得到有效车牌投票时，RGA 仍绘制检测框，但跳过标签精灵，DRM UI plane 不再显示 `:`、`-` 或原始错误车牌文字。该逻辑尚待 Ubuntu 交叉编译和 RK3568 板端复测确认。
+
 ### 2026-07-10 绘制性能回退排查
 
 - 用户反馈三层定位框、半透明圆角文字底板和加粗文字启用后帧率显著下降。
@@ -20,7 +25,16 @@ FPGA 侧的 PCIe 预处理链路仍在后续开发阶段，当前 README 不把�
 - 已完成 RGA-only 双 plane 代码路径：视频 target 的 `main()` 位于 `src/main_video.cc`，MPP NV12 DMA-BUF 由 DRM atomic KMS 导入底层 video plane；两个不映射到 CPU 的 ABGR UI buffer 由 RGA 轮换写入上层 plane。
 - 新增 `RgaOverlayRenderer`：每帧 RGA 清空透明 UI buffer 并绘制三层框；车牌、类型和置信度构成缓存键，缓存失效时才在普通内存生成小型直 alpha 圆角标签，随后通过位置化 RGA alpha blend 写入 UI DMA-BUF。CPU 不再访问 DRM 帧缓冲的像素。
 - MPP decoder callback 现为显示持有额外 `MppBuffer` 引用，当前 scanout 帧在下一次 atomic commit 成功替换后才释放。`save_interval` 在 dual-plane 模式暂时禁用，避免导出不完整的单 plane 图像。
-- 当前状态为代码已更新并完成静态检查；尚未在 Ubuntu 交叉编译或 RK3568 板端验证。板端需确认 atomic KMS 同时提供 NV12 与 ABGR8888 plane，以及 zpos/alpha 合成能力。
+- RK3568 板端已完成一次视频复测：MPP 输出与显示均为 1600 帧、无显示丢帧和 overlay 失败，显示吞吐为 30.07 FPS，NPU 推理为 15.03 FPS。`Avg Decode Call` 为 33.16 ms，其中 32.21 ms 为按 30 FPS 的主动节流；MPP put/get 调用分别为 0.02/0.03 ms，未观察到解码背压。
+- 后续连续运行复测出现 4.08 FPS：`MPP Input Retries` 与 `MPP Buffer Full` 同为 294215，平均重试等待 195.85 ms、连续重试峰值 894；MPP 输入/输出错误和 1 秒无进展 stall 均为零。同期 NPU 推理升至 145.72 ms，而 RGA/UI/DRM 仍约为 0.76/4.56/9.96 ms。该现象表明 VPU 在持续取得少量输出但长期受输入背压限制，优先排查残留进程、DDR/VPU/NPU DVFS、温度和内核日志，不应归因于 overlay 绘制。
+- 已发现并修复 `MppDecoder::Init()` 的 context 所有权错误：局部变量曾遮蔽类成员 `mpp_ctx`，导致析构函数无法调用 `mpp_destroy()`，`Reset()` 也会向空 context 发命令。该缺口会使多次运行后的 MPP/VPU 资源回收不可靠，与“重启后恢复、连续运行退化”的现象直接相关。现在 context 由类成员持有，初始化失败路径和主函数初始化失败路径均会释放已分配资源。
+- 修复后一次重启复测曾在输出 3 帧后遇到 `MPP_ERR_BUFFER_FULL` 持续约 1 秒，旧 watchdog 主动返回 `MPP_ERR_TIMEOUT` 并退出；当时 MPP 输入/输出错误均为零，说明是 watchdog 阈值而非 MPP 致命返回。现已改为 1 秒记录 `MPP Input Stalls` 告警、连续 5 秒无输出才记录 `MPP Input Aborts` 并退出，避免把短暂 VPU 启动背压误判为故障。
+- 上述启动背压期间的板端状态为：CPU 51.25°C、CPU 1416 MHz、NPU 负载 3%、可用内存约 1399 MB；DMC 工具报告值为 1560（标签显示 GHz，实际单位需在板端确认）。未见 CPU 温度、NPU 负载或内存压力异常，后续应优先采集 `dmesg` 中 rkvdec/VPU/IOMMU/DMC 相关日志，并检查 raw H.264 parser 状态。
+- `dmesg` 已确认启动背压的根因在板端电源管理路径：`mpp_rkvdec2 fdf80200.rkvdec: Cannot set voltage 875000 uV` 与 `rk3x-i2c fdd40000.i2c: timeout` 同时出现；随后 CPU 的 `_set_opp_voltage` 和 `cpufreq` 也以 `-110` 失败。VPU 与 CPU 均无法通过 PMIC I2C 切换 OPP 电压，导致 rkvdec 无法正常提升/切换性能状态，从而持续出现 MPP `BUFFER_FULL`。该问题不属于 demo 用户态代码，需要检查板级供电、PMIC/I2C 总线、内核 DTS regulator/OPP 配置及对应内核驱动。
+- 未修改内核的临时运行适配：新增 `run_video_retry.sh`。它默认在首次启动前等待 15 秒，并在 demo 因 MPP 中止而退出后等待 3 秒再创建一次全新进程，最多执行 2 次。可通过 `MPP_STARTUP_DELAY_S`、`MPP_RETRY_DELAY_S` 和 `MPP_MAX_ATTEMPTS` 覆盖；它只用于规避冷启动的瞬时 PMIC/OPP 故障，不能修复 I2C 调压超时本身。
+- 修复后重启板端首次复测为 30.03 FPS：MPP 输出/显示均为 1600 帧、无显示丢帧和 MPP 输入/输出错误。仅出现 6 次短暂 `MPP_ERR_BUFFER_FULL`，无实际退避等待、无 stall；NPU 36.50 ms、RGA/UI/DRM 为 0.60/4.63/8.69 ms，恢复到正常基线。仍需在不重启的前提下连续多次运行验证 context 回收是否彻底消除退化。
+- 未重启条件下第二次连续复测为 30.09 FPS：10 次短暂 `MPP_ERR_BUFFER_FULL`、连续重试峰值 3、无退避等待/stall/MPP 错误；NPU 36.60 ms、RGA/UI/DRM 为 0.61/4.71/8.70 ms。首轮与第二轮无性能退化，表明 MPP context 与显示 buffer 回收已在连续运行间生效。
+- 未重启条件下第三次连续复测为 30.08 FPS：13 次短暂 `MPP_ERR_BUFFER_FULL`、连续重试峰值 4、无退避等待/stall/MPP 错误；NPU 36.67 ms、RGA/UI/DRM 为 0.60/4.71/8.26 ms。输入重试计数在每个进程启动时清零，6/10/13 是各次独立运行的瞬时非阻塞队列满次数，并非跨运行累积；三次均保持 30 FPS，完成连续运行稳定性验证。
 - 修复 Ubuntu GCC 6.3 构建兼容：图片 demo 不再访问已移除的 CPU 映射 framebuffer；`InferJob` 使用显式构造函数入队，避免旧编译器拒绝花括号初始化。等待 Ubuntu 重新编译。
 - 修复 RGA overlay 链接冲突：`plate_font.h` 的字体位图改为仅由 `image_drawing.c` 定义，RGA 渲染模块仅引用该唯一实例，避免 `plate_font_data` 在两个 target 中重复定义。
 - 根据板端 `2.43 FPS` 数据修复显示反压：原 `Avg MPP Decode` 计时覆盖整个同步 `decoder->Decode()` 调用，并非纯硬件解码；RGA UI 与 DRM atomic commit 曾直接在该回调中执行。
@@ -30,7 +44,12 @@ FPGA 侧的 PCIe 预处理链路仍在后续开发阶段，当前 README 不把�
 - 修复 RK3568 RGA overlay 的 `RGA_COLORFILL fail: Invalid argument`：旧 `imrectangle` 会把细边转换为如 `2x6` 的独立 color-fill 目标。现在以完整 UI DMA-BUF 为目标，通过四个裁剪 `imfill` 区域绘制框线，并显式使用 `wrapbuffer_fd_t` 传入完整宽高和 stride。
 - 标签面板现按车牌框水平中心对齐，优先完整放置在框上方；上方空间不足时自动切换到框下方。面板坐标始终夹紧至 UI 边界，缓存生成时会按显示分辨率缩小字号，RGA blend 也保留最终裁剪保护，避免文字框越界或被裁切。
 - 视频编译入口已迁回 `src/main_video.cc`；`src/main.cc` 保留为空文件且不参与 video target 编译，避免双 main 或额外跳转接口。
-- `build_and_push.sh` 现从 `TARGET_SDK` 推导板端目录，构建后检查图片/视频可执行文件与至少三个视频 RKNN 模型，推送后检查 `main_video.cc` 对应的视频可执行文件和模型目录。
+- 当前工作区中的 `build_and_push.sh` 已被删除；恢复该脚本前不能使用 README 中的一键构建推送流程。
+- 视频性能摘要包含 MPP callback、put/get-frame、节流睡眠和 buffer-group 峰值统计；单个 RGA 框或标签操作失败只跳过该对象，避免逐帧错误刷屏拖慢解码。
+- 当前本地版本使用 512 KiB 裸码流读取块，并显式将 MPP 输入和输出配置为非阻塞模式。`decode_put_packet()` 仅对 `MPP_ERR_BUFFER_FULL` 和输入超时重试；无输出进展时以 1 ms 退避，单个输入包持续 1 秒无进展仅记录背压告警，连续 5 秒无进展才停止解码并返回错误。EOS 包会等待最终输出帧，等待超过 1 秒同样作为错误返回。其他输入错误立即终止当前解码，主函数以非零状态退出，不对背压状态盲目 reset 解码器。
+- 裸码流读取结束后始终单独提交零长度 EOS 包，不再依赖最后一次 `fread()` 是否触发 `feof()`；这保证文件大小恰好为读取块整数倍时也能完成 VPU drain 和 MPP 资源收尾。
+- 性能摘要现记录输入重试次数、buffer-full/输入超时分类、实际退避等待、连续重试峰值、输入背压告警、输入中止和输入/输出侧错误数。这样可区分正常短暂背压、输出 buffer 未归还、VPU/DDR 降速及不可恢复的 MPP 错误。
+- MPP 初始化现在在 `mpp_init()` 前显式启用 raw-stream split parser 和 parser fast mode，符合本地 MPP API 的时序要求；若板端仍存在高频输入重试，需要结合 DDR/VPU 频率、温度和 `dmesg` 排查硬件资源状态。
 
 ### 2026-07-07 双缓冲与绘制修复
 
@@ -146,13 +165,6 @@ export GCC_COMPILER=<GCC_COMPILER_PATH> #配置好后可省略
 ./build-linux.sh -t rk3568 -a aarch64 -d yolov8_lpr
 ```
 
-如果希望一键完成“清理旧 build、重新编译、推送到板端并恢复可执行权限”，可直接使用：
-
-```shell
-cd /mnt/hgfs/Yolo_LPR_RK3568_FPGA_Project/3_NPU_Yolov8_LPR_Demo
-./build_and_push.sh
-```
-
 ## Push demo files to device
 
 ```shell
@@ -178,6 +190,8 @@ sudo systemctl isolate multi-user.target
 sudo systemctl set-default graphical.target
 sudo reboot
 ```
+
+板端 PMIC/I2C 电源管理异常，默认开机后等待60s，规避部分冷启动 PMIC/OPP 瞬时异常，再运行demo
 
 ```shell
 #从终端使用
