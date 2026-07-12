@@ -31,7 +31,10 @@ FPGA 侧的 PCIe 预处理链路仍在后续开发阶段，当前 README 不把�
 - 修复后一次重启复测曾在输出 3 帧后遇到 `MPP_ERR_BUFFER_FULL` 持续约 1 秒，旧 watchdog 主动返回 `MPP_ERR_TIMEOUT` 并退出；当时 MPP 输入/输出错误均为零，说明是 watchdog 阈值而非 MPP 致命返回。现已改为 1 秒记录 `MPP Input Stalls` 告警、连续 5 秒无输出才记录 `MPP Input Aborts` 并退出，避免把短暂 VPU 启动背压误判为故障。
 - 上述启动背压期间的板端状态为：CPU 51.25°C、CPU 1416 MHz、NPU 负载 3%、可用内存约 1399 MB；DMC 工具报告值为 1560（标签显示 GHz，实际单位需在板端确认）。未见 CPU 温度、NPU 负载或内存压力异常，后续应优先采集 `dmesg` 中 rkvdec/VPU/IOMMU/DMC 相关日志，并检查 raw H.264 parser 状态。
 - `dmesg` 已确认启动背压的根因在板端电源管理路径：`mpp_rkvdec2 fdf80200.rkvdec: Cannot set voltage 875000 uV` 与 `rk3x-i2c fdd40000.i2c: timeout` 同时出现；随后 CPU 的 `_set_opp_voltage` 和 `cpufreq` 也以 `-110` 失败。VPU 与 CPU 均无法通过 PMIC I2C 切换 OPP 电压，导致 rkvdec 无法正常提升/切换性能状态，从而持续出现 MPP `BUFFER_FULL`。该问题不属于 demo 用户态代码，需要检查板级供电、PMIC/I2C 总线、内核 DTS regulator/OPP 配置及对应内核驱动。
-- 未修改内核的临时运行适配：新增 `run_video_retry.sh`。它默认在首次启动前等待 15 秒，并在 demo 因 MPP 中止而退出后等待 3 秒再创建一次全新进程，最多执行 2 次。可通过 `MPP_STARTUP_DELAY_S`、`MPP_RETRY_DELAY_S` 和 `MPP_MAX_ATTEMPTS` 覆盖；它只用于规避冷启动的瞬时 PMIC/OPP 故障，不能修复 I2C 调压超时本身。
+- 在“放置久后慢帧”的同一时间点再次捕获 `rk3x-i2c fdd40000.i2c: timeout`，紧随其后 CPU `_set_opp_voltage`、regulator 与 `cpufreq` 均以 `-110` 失败，随后 `mpp_rkvdec2` 发起 900000 uV 调压请求。`set voltage` 日志表示请求而非成功确认；结合前后的 I2C timeout 和 MPP `BUFFER_FULL`，可确认空闲后的慢帧与 PMIC I2C/OPP 调压故障直接相关。
+- 用户态 VPU 预检已验证可用：将 `fdf80200.rkvdec` runtime-PM 设为 `on` 后无新增调压/I2C 错误；将 devfreq governor 从 `vdec2_ondemand` 切换为 `performance` 后，频率由 297000000 升至 400000000，仍无错误。该设置可作为空闲期临时规避方案，后续需在保持 `power/control=on` 与 `governor=performance` 时完成长时间空闲后的 demo 复测；设置仅在当前开机周期有效。
+- 已对照 `Rockchip_Developer_Guide_MPP_CN.pdf` 第 19-25 页：固定长度裸码流读取属于内部分帧，必须在 `mpp_init()` 前启用 `MPP_DEC_SET_PARSER_SPLIT_MODE`；当前代码符合该要求。指南说明非阻塞 `decode_put_packet()` 在内部队列满时应等待重试，默认约可排队 4 个输入包；当前代码的 retry 行为符合规范。指南同时指出内部分帧效率低于外部按完整帧提交，后续可用 Annex-B access-unit 分帧降低 parser/输入队列压力，但无法修复 VPU OPP 调压失败。
+- 未修改内核的临时运行适配：新增 `vpu_preflight.sh`，随 video demo 一同安装。它以 root 身份将 `rkvdec` runtime-PM 固定为 `on`、devfreq 固定为 `performance`，等待 2 秒后确认 `active`、400 MHz 且预检期间无新增 PMIC/I2C/OPP 错误；通过时只提示可以启动 demo，并在 demo 退出后保持该锁定至本次开机结束。它不能修复 I2C 调压超时本身，预检失败时不应启动 demo。
 - 修复后重启板端首次复测为 30.03 FPS：MPP 输出/显示均为 1600 帧、无显示丢帧和 MPP 输入/输出错误。仅出现 6 次短暂 `MPP_ERR_BUFFER_FULL`，无实际退避等待、无 stall；NPU 36.50 ms、RGA/UI/DRM 为 0.60/4.63/8.69 ms，恢复到正常基线。仍需在不重启的前提下连续多次运行验证 context 回收是否彻底消除退化。
 - 未重启条件下第二次连续复测为 30.09 FPS：10 次短暂 `MPP_ERR_BUFFER_FULL`、连续重试峰值 3、无退避等待/stall/MPP 错误；NPU 36.60 ms、RGA/UI/DRM 为 0.61/4.71/8.70 ms。首轮与第二轮无性能退化，表明 MPP context 与显示 buffer 回收已在连续运行间生效。
 - 未重启条件下第三次连续复测为 30.08 FPS：13 次短暂 `MPP_ERR_BUFFER_FULL`、连续重试峰值 4、无退避等待/stall/MPP 错误；NPU 36.67 ms、RGA/UI/DRM 为 0.60/4.71/8.26 ms。输入重试计数在每个进程启动时清零，6/10/13 是各次独立运行的瞬时非阻塞队列满次数，并非跨运行累积；三次均保持 30 FPS，完成连续运行稳定性验证。
@@ -165,6 +168,14 @@ export GCC_COMPILER=<GCC_COMPILER_PATH> #配置好后可省略
 ./build-linux.sh -t rk3568 -a aarch64 -d yolov8_lpr
 ```
 
+/bin/bash^M 表示 build-linux.sh 被保存为 Windows 的 CRLF 换行。
+在 Ubuntu 共享目录执行：
+```shell
+sed -i 's/\r$//' build-linux.sh
+chmod +x build-linux.sh
+./build-linux.sh -t rk3568 -a aarch64 -d yolov8_lpr
+```
+
 ## Push demo files to device
 
 ```shell
@@ -191,7 +202,11 @@ sudo systemctl set-default graphical.target
 sudo reboot
 ```
 
-板端 PMIC/I2C 电源管理异常，默认开机后等待60s，规避部分冷启动 PMIC/OPP 瞬时异常，再运行demo
+板端 PMIC/I2C 电源管理异常
+```shell
+cd /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo
+./vpu_preflight.sh
+```
 
 ```shell
 #从终端使用
@@ -208,7 +223,8 @@ for img in ./test/test{1..4}.jpg; do ./yolov8_lpr_picture_demo ./model/yolov8.rk
 
 #推理视频
 cd /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo
-./yolov8_lpr_video_demo ./model/yolov8.rknn ./model/lprnet7repair_i8.rknn ./model/lprnet8repair_i8.rknn ./test/testvideo1.h264 0
+./vpu_preflight.sh
+# 看到 "VPU preflight passed" 后，再手动运行 yolov8_lpr_video_demo。
 
 #退出板端终端命令为logout
 

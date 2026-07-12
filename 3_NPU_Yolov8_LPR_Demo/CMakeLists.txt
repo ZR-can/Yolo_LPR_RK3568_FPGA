@@ -99,5 +99,6 @@ foreach(TARGET_NAME ${TARGET_PICTURE} ${TARGET_VIDEO})
             "${CMAKE_CURRENT_SOURCE_DIR}/model/testvideo*.h265"
         )
         install(FILES ${TEST_VIDEO_FILES} DESTINATION ${TARGET_NAME}/test)
+        install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/vpu_preflight.sh DESTINATION ${TARGET_NAME})
     endif()
 endforeach()
