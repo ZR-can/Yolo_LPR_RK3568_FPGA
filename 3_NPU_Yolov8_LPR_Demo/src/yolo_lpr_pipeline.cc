@@ -216,14 +216,21 @@ int process_pipeline(YOLOLPRPipelineContext* ctx, image_buffer_t* src_image, std
             continue;
         }
 
-        image_preprocess(*src_image, crop_img, x1, y1, x2, y2);
+        if (image_preprocess(*src_image, crop_img, x1, y1, x2, y2) != 0) {
+            free(crop_img.virt_addr);
+            continue;
+        }
 
         lprnet_app_context_t* current_lpr_ctx = (det_result->cls_id == 1) ? &ctx->lprnet8_ctx : &ctx->lprnet7_ctx;
             
         lprnet_result lpr_res;
-        inference_lprnet_model(current_lpr_ctx, &crop_img, &lpr_res);
+        ret = inference_lprnet_model(current_lpr_ctx, &crop_img, &lpr_res);
             
         free(crop_img.virt_addr);
+
+        if (ret != 0) {
+            continue;
+        }
 
         correct_plate_string(lpr_res.plate_name, det_result->cls_id);
         
@@ -304,14 +311,21 @@ int process_pipeline_preprocessed(YOLOLPRPipelineContext* ctx, image_buffer_t* p
             continue;
         }
 
-        image_preprocess(rgb_model_img, crop_img, x1, y1, x2, y2);
+        if (image_preprocess(rgb_model_img, crop_img, x1, y1, x2, y2) != 0) {
+            free(crop_img.virt_addr);
+            continue;
+        }
 
         lprnet_app_context_t* current_lpr_ctx = (det_result->cls_id == 1) ? &ctx->lprnet8_ctx : &ctx->lprnet7_ctx;
             
         lprnet_result lpr_res;
-        inference_lprnet_model(current_lpr_ctx, &crop_img, &lpr_res);
+        ret = inference_lprnet_model(current_lpr_ctx, &crop_img, &lpr_res);
             
         free(crop_img.virt_addr);
+
+        if (ret != 0) {
+            continue;
+        }
 
         correct_plate_string(lpr_res.plate_name, det_result->cls_id);
         

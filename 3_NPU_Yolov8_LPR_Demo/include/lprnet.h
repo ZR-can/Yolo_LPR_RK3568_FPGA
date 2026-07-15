@@ -57,7 +57,7 @@ const std::vector<std::string>
         "L", "M", "N", "P", "Q", "R", "S", "T", "U", "V",
         "W", "X", "Y", "Z", "O", "I", "-"};
 
-void image_preprocess(const image_buffer_t& src_img, image_buffer_t& dst_img, int x1, int y1, int x2, int y2);
+int image_preprocess(const image_buffer_t& src_img, image_buffer_t& dst_img, int x1, int y1, int x2, int y2);
 
 int init_lprnet_model(const char *model_path, lprnet_app_context_t *app_ctx);
 

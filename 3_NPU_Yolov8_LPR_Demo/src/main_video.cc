@@ -402,8 +402,8 @@ static void display_thread_func(FrameProcessContext* ctx) {
 
         if (!ctx->drm_initialized) {
             if (drm_display_init(&ctx->drm_display, job.video.width, job.video.height) == 0) {
-                ctx->drm_initialized = ctx->overlay_renderer.Init(ctx->drm_display.mode_width,
-                                                                    ctx->drm_display.mode_height) == 0;
+                ctx->drm_initialized = ctx->overlay_renderer.Init(ctx->drm_display.ui_width,
+                                                                    ctx->drm_display.ui_height) == 0;
                 if (!ctx->drm_initialized) {
                     drm_display_deinit(&ctx->drm_display);
                 }

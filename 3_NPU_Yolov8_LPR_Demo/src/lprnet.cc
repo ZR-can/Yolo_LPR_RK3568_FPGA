@@ -22,27 +22,38 @@ static void dump_tensor_attr(rknn_tensor_attr *attr)
            get_type_string(attr->type), get_qnt_type_string(attr->qnt_type), attr->zp, attr->scale);
 }
 
-// 使用引用传递，并传入裁剪坐标
-void image_preprocess(const image_buffer_t& src_img, image_buffer_t& dst_img, int x1, int y1, int x2, int y2)
+int image_preprocess(const image_buffer_t& src_img, image_buffer_t& dst_img, int x1, int y1, int x2, int y2)
 {
-    // 1. 将原图映射为 Mat (假设原图是 RGB)
-    cv::Mat full_img(src_img.height, src_img.width, CV_8UC3, src_img.virt_addr);
+    if (src_img.virt_addr == nullptr || dst_img.virt_addr == nullptr ||
+        src_img.width <= 0 || src_img.height <= 0 || dst_img.width <= 0 || dst_img.height <= 0 ||
+        x1 < 0 || y1 < 0 || x2 > src_img.width || y2 > src_img.height || x2 <= x1 || y2 <= y1) {
+        return -1;
+    }
 
-    // 2. 裁剪 ROI
+    const int src_stride = src_img.width_stride > 0 ? src_img.width_stride : src_img.width;
     cv::Rect roi(x1, y1, x2 - x1, y2 - y1);
-    cv::Mat crop_mat = full_img(roi);
-
-    // 3. 缩放
-    cv::Mat resized_mat;
-    cv::resize(crop_mat, resized_mat, cv::Size(dst_img.width, dst_img.height));
-
-    // 4. 颜色转换 (RGB -> BGR)
     cv::Mat bgr_mat;
-    cv::cvtColor(resized_mat, bgr_mat, cv::COLOR_RGB2BGR);
+    if (src_img.format == IMAGE_FORMAT_RGB888) {
+        cv::Mat full_img(src_img.height, src_img.width, CV_8UC3, src_img.virt_addr, src_stride * 3);
+        cv::Mat resized_mat;
+        cv::resize(full_img(roi), resized_mat, cv::Size(dst_img.width, dst_img.height));
+        cv::cvtColor(resized_mat, bgr_mat, cv::COLOR_RGB2BGR);
+    } else if (src_img.format == IMAGE_FORMAT_BGR565) {
+        cv::Mat full_img(src_img.height, src_img.width, CV_8UC2, src_img.virt_addr, src_stride * 2);
+        cv::Mat roi_bgr;
+        cv::cvtColor(full_img(roi), roi_bgr, cv::COLOR_BGR5652BGR);
+        cv::resize(roi_bgr, bgr_mat, cv::Size(dst_img.width, dst_img.height));
+    } else {
+        printf("image_preprocess: unsupported source format=%d\n", src_img.format);
+        return -1;
+    }
 
-    // 5. 深拷贝数据到 main 函数分配的内存中
-    // 这样即便函数结束，dst_img.virt_addr 里的数据依然有效
-    memcpy(dst_img.virt_addr, bgr_mat.data, dst_img.size);
+    const size_t expected_size = (size_t)dst_img.width * dst_img.height * 3;
+    if (!bgr_mat.isContinuous() || dst_img.size < expected_size) {
+        return -1;
+    }
+    memcpy(dst_img.virt_addr, bgr_mat.data, expected_size);
+    return 0;
 }
 
 int init_lprnet_model(const char *model_path, lprnet_app_context_t *app_ctx)
@@ -253,10 +264,11 @@ int inference_lprnet_model(lprnet_app_context_t *app_ctx, image_buffer_t *src_im
     // The license plate is converted into a string according to the dictionary
     out_result->plate_name.clear();
     float total_prob = 0.0f;
-    for (int hh : no_repeat_blank_label)
+    for (size_t i = 0; i < no_repeat_blank_label.size(); ++i)
     {
-        out_result->plate_name += plate_code[hh];
-        total_prob += no_repeat_blank_prob[hh];
+        const int label_index = no_repeat_blank_label[i];
+        out_result->plate_name += plate_code[label_index];
+        total_prob += no_repeat_blank_prob[i];
     }
 
     // 计算该车牌的平均字符置信度

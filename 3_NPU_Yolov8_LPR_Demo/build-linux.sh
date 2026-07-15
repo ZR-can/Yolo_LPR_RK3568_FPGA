@@ -195,7 +195,7 @@ cmake ../../${BUILD_DEMO_PATH} \
 make -j4
 make install
 
-# Check deployment artifacts for both video planes and the RGA overlay path.
+# Check deployment artifacts for the video and PCIe RGA display paths.
 suffix=".rknn"
 shopt -s nullglob
 if [ -d "$INSTALL_DIR" ]; then
@@ -209,6 +209,12 @@ if [ -d "$INSTALL_DIR" ]; then
 
     if [ ! -x "$INSTALL_DIR/yolov8_lpr_video_demo/yolov8_lpr_video_demo" ]; then
         echo -e "\e[91mThe RGA dual-plane video executable is missing from the install directory.\e[0m"
+    fi
+    if [ ! -x "$INSTALL_DIR/yolov8_lpr_pcie_demo/yolov8_lpr_pcie_demo" ]; then
+        echo -e "\e[91mThe PCIe BGR565 executable is missing from the install directory.\e[0m"
+    fi
+    if [ ! -f "$INSTALL_DIR/yolov8_lpr_pcie_demo/pango_pci_driver.ko" ]; then
+        echo -e "\e[91mThe Pango PCIe driver module is missing from the install directory.\e[0m"
     fi
 else
     echo -e "\e[91mInstall directory \"$INSTALL_DIR\" does not exist, please check!\e[0m"

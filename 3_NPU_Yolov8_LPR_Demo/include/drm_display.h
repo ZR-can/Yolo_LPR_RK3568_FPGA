@@ -11,14 +11,19 @@ struct DrmDisplay {
     uint32_t conn_id = 0;
     uint32_t crtc_id = 0;
     int crtc_index = -1;
+    // CRTC output size and UI plane source size are intentionally independent.
     int mode_width = 0;
     int mode_height = 0;
+    int ui_width = 0;
+    int ui_height = 0;
+    bool master_acquired = false;
     void* orig_crtc = nullptr;
     void* atomic_state = nullptr;
 };
 
 int drm_display_init(DrmDisplay* display, int width, int height);
 int drm_display_get_ui_buffer(DrmDisplay* display, image_buffer_t* ui_buffer);
+int drm_display_commit_ui(DrmDisplay* display);
 int drm_display_present(DrmDisplay* display, const image_buffer_t* image);
 int drm_display_present_nv12(DrmDisplay* display, const image_buffer_t* video_buffer);
 void drm_display_deinit(DrmDisplay* display);

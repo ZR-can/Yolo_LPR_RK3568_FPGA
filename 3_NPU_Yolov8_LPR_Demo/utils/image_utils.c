@@ -386,7 +386,8 @@ static int convert_image_cpu(image_buffer_t *src, image_buffer_t *dst, image_rec
     if (src->virt_addr == NULL) {
         return -1;
     }
-    if (src->format != dst->format) {
+    const int bgr565_to_rgb888 = src->format == IMAGE_FORMAT_BGR565 && dst->format == IMAGE_FORMAT_RGB888;
+    if (src->format != dst->format && !bgr565_to_rgb888) {
         return -1;
     }
 
@@ -419,7 +420,28 @@ static int convert_image_cpu(image_buffer_t *src, image_buffer_t *dst, image_rec
 
     int need_release_dst_buffer = 0;
     int reti = 0;
-    if (src->format == IMAGE_FORMAT_RGB888) {
+    if (bgr565_to_rgb888) {
+        const int src_stride = src->width_stride > 0 ? src->width_stride : src->width;
+        const int dst_stride = dst->width_stride > 0 ? dst->width_stride : dst->width;
+        const unsigned char* src_data = src->virt_addr;
+        unsigned char* dst_data = dst->virt_addr;
+        for (int dy = 0; dy < dst_box_h; ++dy) {
+            const int sy = src_box_y + (int)((long long)dy * src_box_h / dst_box_h);
+            unsigned char* dst_row = dst_data + ((dst_box_y + dy) * dst_stride + dst_box_x) * 3;
+            for (int dx = 0; dx < dst_box_w; ++dx) {
+                const int sx = src_box_x + (int)((long long)dx * src_box_w / dst_box_w);
+                const unsigned char* pixel_data = src_data + (sy * src_stride + sx) * 2;
+                const unsigned short pixel = (unsigned short)pixel_data[0] |
+                                             ((unsigned short)pixel_data[1] << 8);
+                const unsigned char red5 = pixel & 0x1f;
+                const unsigned char green6 = (pixel >> 5) & 0x3f;
+                const unsigned char blue5 = (pixel >> 11) & 0x1f;
+                dst_row[dx * 3] = (red5 << 3) | (red5 >> 2);
+                dst_row[dx * 3 + 1] = (green6 << 2) | (green6 >> 4);
+                dst_row[dx * 3 + 2] = (blue5 << 3) | (blue5 >> 2);
+            }
+        }
+    } else if (src->format == IMAGE_FORMAT_RGB888) {
         reti = crop_and_scale_image_c(3, src->virt_addr, src->width, src->height,
             src_box_x, src_box_y, src_box_w, src_box_h,
             dst->virt_addr, dst->width, dst->height,
@@ -441,12 +463,12 @@ static int convert_image_cpu(image_buffer_t *src, image_buffer_t *dst, image_rec
             dst_box_x, dst_box_y, dst_box_w, dst_box_h);
     } else {
         printf("no support format %d\n", src->format);
+        reti = -1;
     }
     if (reti != 0) {
         printf("convert_image_cpu fail %d\n", reti);
         return -1;
     }
-    printf("finish\n");
     return 0;
 }
 
@@ -461,6 +483,8 @@ static int get_rga_fmt(image_format_t fmt) {
         return RK_FORMAT_YCbCr_420_SP;
     case IMAGE_FORMAT_YUV420SP_NV21:
         return RK_FORMAT_YCrCb_420_SP;
+    case IMAGE_FORMAT_BGR565:
+        return RK_FORMAT_BGR_565;
     default:
         return -1;
     }
@@ -479,11 +503,13 @@ int get_image_size(const image_buffer_t* image)
         return image->width * image->height * 3;    
     case IMAGE_FORMAT_RGBA8888:
         return image->width * image->height * 4;
+    case IMAGE_FORMAT_BGR565:
+        return image->width * image->height * 2;
     case IMAGE_FORMAT_YUV420SP_NV12:
     case IMAGE_FORMAT_YUV420SP_NV21:
         return image->width * image->height * 3 / 2;
     default:
-        break;
+        return 0;
     }
 }
 

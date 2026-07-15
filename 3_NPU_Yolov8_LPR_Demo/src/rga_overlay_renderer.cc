@@ -338,11 +338,12 @@ bool RgaOverlayRenderer::BlendSprite(const LabelSprite& sprite, image_buffer_t* 
                      IM_ALPHA_BLEND_SRC_OVER) == IM_STATUS_SUCCESS;
 }
 
-int RgaOverlayRenderer::Render(image_buffer_t* ui_buffer, const std::vector<PipelineResult>& results) {
+int RgaOverlayRenderer::Render(image_buffer_t* ui_buffer, const std::vector<PipelineResult>& results,
+                               bool clear_background) {
     if (ui_buffer == nullptr || ui_buffer->width != width_ || ui_buffer->height != height_) {
         return -1;
     }
-    if (!FillUi(ui_buffer, 0x00000000)) {
+    if (clear_background && !FillUi(ui_buffer, 0x00000000)) {
         return -1;
     }
 

@@ -3,10 +3,27 @@
 
 ## 当前状态
 
-当前主线实现的是 RK3568 端的视频解码、RGA 预处理、YOLOv8n 车牌定位、LPRNet 字符识别和双线程显示。
-FPGA 侧的 PCIe 预处理链路仍在后续开发阶段，当前 README 不把这部分视为已完成能力。
+当前工程保留 MPP 视频 demo，并新增独立的 `yolov8_lpr_pcie_demo` 首版代码。PCIe 版本面向 1280×720、每像素 2 字节的小端 BGR565 帧，移除了 MPP/H.264 解码依赖；当前仅完成 Windows 工作区编码与静态检查，尚未在 Ubuntu 交叉编译、推送或 RK3568 板端验证。
+`pango_pci_driver.ko` 已随 PCIe demo 安装，但 FPGA 侧视频源仍属于外部前置条件；本工程没有把 FPGA 侧 PCIe 预处理描述为已经集成完成。当前模块的 vermagic 为 `6.1.99 SMP mod_unload aarch64`，板端内核必须兼容。
 
 ## 开发记录
+
+### 2026-07-15 PCIe 720p BGR565 首版
+
+- 新增 `yolov8_lpr_pcie_demo`、独立 `PcieFrameSource` 和 Pango 驱动 ABI 头文件。初始化顺序沿用已验证参考实现：读取设备信息、配置 DMA、查询并映射 BAR0、建立 DMA 映射，再写入 `0xffffffe5` 启动采集；退出时写入 `0xffffff00` 并释放映射。
+- Pango 驱动的 `read()` 返回值按驱动状态码解释：正值（板端已观测成功值为 `2`）表示映射缓冲区中已有一帧完整 DMA 图像，不与 `1280*720*2=1843200` 比较；`0`、`EINTR`、`EAGAIN` 和参考实现可能出现的 `EPERM` 进入短暂重试，其他错误才终止采集。
+- BGR565 原图通过 6 槽固定帧池在采集、显示和推理线程间共享。显示队列容量为 2，推理待处理队列容量为 1，队列满时替换旧帧；默认每 2 帧提交一次推理，避免显示或 NPU 反压阻塞 PCIe 读取。
+- YOLO 路径直接调用现有 `process_pipeline()`：RGA 在 `convert_image_with_letterbox()` 中完成 BGR565 1280×720 到 RGB888 640×640 的格式转换、等比例缩放和上下填充，检测框由后处理映射回 1280×720 原图坐标。
+- LPR 路径不生成整帧 RGB888：先在 BGR565 原图上裁剪检测 ROI，再用 OpenCV `COLOR_BGR5652BGR` 转为 BGR、缩放到 94×24，保持现有 LPRNet 输入字节语义。原 Tracker 接收原图坐标，显示时再按 DRM mode 映射坐标。
+- PCIe 显示复用现有 DRM UI 双缓冲：RGA 将 BGR565 原图直接转换到 RGBA UI buffer，随后在同一 buffer 上叠加检测框和标签，再执行 UI-only atomic commit。首版尚待 Ubuntu 交叉编译和板端确认颜色顺序、画面完整性、识别坐标、退出回收及性能统计。
+- CMake 安装布局会生成独立的 `yolov8_lpr_pcie_demo/` 目录并复制模型；`build-linux.sh` 在安装后同时检查 PCIe 可执行文件是否存在。
+- 修复 LPRNet CTC 后处理的字符置信度索引：车牌字符继续使用类别 ID 查询字典，概率改为按解码后的字符位置同步读取，避免把类别 ID 当作概率数组下标造成越界。
+- 将工程根目录的 `pango_pci_driver.ko` 安装到 `yolov8_lpr_pcie_demo/`，并在 `build-linux.sh` 中检查驱动模块安装产物。该预编译模块仅确认适配 `6.1.99` aarch64 内核，加载前必须核对板端 `uname -r`。
+- 修复 PCIe 运行期间 `Ctrl+C` 可能无法中断主线程驱动读取的问题：创建推理和显示线程前临时屏蔽 `SIGINT/SIGTERM`，工作线程继承屏蔽状态后仅在主采集线程解除屏蔽，使信号能够中断其阻塞 `read()`；信号到达后先输出 `PCIe: stop requested`，随后沿用停止采集、DMA unmap、线程 join 和性能统计的正常回收路径。
+- 板端现象“启动时全屏、运行中突然缩至左上角约三分之二区域”确认是 CRTC 从 1280×720 被桌面显示服务重新切回 1920×1080，而 demo 后续只更新 1280×720 plane。DRM 初始化现在必须取得独占 master；若桌面仍占用 KMS，会明确报错并拒绝启动，避免两个显示主体中途竞争。
+- CRTC 固定使用已连接显示器 EDID 标记的 preferred/native mode；PCIe UI 双缓冲继续保持 1280×720，RGA 只执行 BGR565→RGBA 转换和 720p overlay，不再生成 1080p/4K framebuffer。atomic plane 使用 1280×720 source、native CRTC destination，由 RK3568 VOP 完成全屏缩放，并在启动时打印 UI framebuffer、实际 mode 和 `VOP plane scaling`。该方案不增加每帧 RGA/CPU 像素处理量，仍需 Ubuntu 交叉编译及 RK3568 板端复测。
+- PCIe 显示线程连续 3 次 atomic commit 失败时会向主采集线程发送 `SIGTERM`，沿用正常的 PCIe 停止与 DMA 回收流程退出；不再在 DRM master 丢失或显示链路失效后继续无画面识别。
+- 首次板端复测在 `/dev/dri/card0` 和 `card1` 均得到 `Device or resource busy`，说明桌面显示进程仍持有两个 DRM card；demo 按设计在 PCIe 初始化前终止，没有发生 DMA 资源泄漏。不能删除 master 检查，应通过 `fuser` 或 debugfs `clients` 找到实际 master 所属进程，并停止对应 systemd service，防止服务自动拉起后再次竞争。
 
 ### 2026-07-12 车牌文字显示校验
 
@@ -65,84 +82,10 @@ FPGA 侧的 PCIe 预处理链路仍在后续开发阶段，当前 README 不把�
 
 ## 文件构成介绍
 
+```shell
+
 ```
-├── 3rdparty\        #第三方库，只需要看看mpp，别的已经改好
-│   ├── allocator
-│   ├── CMakeLists.txt      #第三方库CMakeLists.txt这个目前已经修改好不用动
-│   ├── fftw
-│   ├── jpeg_turbo
-│   ├── kaldi_native_fbank
-│   ├── librga
-│   ├── libsndfile
-│   ├── mpp #mpp视频硬件支持，视频流可能需要用到
-│   ├── opencl
-│   ├── opencv
-│   ├── rknpu1
-│   ├── stb_image
-│   ├── rknpu2
-│   ├── timer
-│   └── zlmediakit
-├── adb\    #adb Windows支持工具,不同于Linux上使用adb,Windows上使用adb需要在adb前加上.\,例如.\adb shell,.\adb devices
-│   ├── adb.exe
-│   ├── AdbWinApi.dll
-│   └── AdbWinUsbApi.dll
-├── build\      #交叉编译build文件
-│   └── build_rknn_yolov8_lpr_demo_rk356x_linux_aarch64_Release
-├── include\        #工程头文件
-│   ├── drm_func.h
-│   ├── lprnet.h
-│   ├── postprocess.h
-│   └── yolov8.h
-├── install\    #交叉编译后push到板端使用的demo
-│   └── rk356x_linux_aarch64
-├── model\      #model相关
-│   ├── labels_list.txt
-│   ├── lprnet7.rknn
-│   ├── lprnet8.rknn
-│   ├── test1.jpg
-│   ├── test2.jpg
-│   ├── test3.jpg
-│   ├── test4.jpg
-│   └── yolov8.rknn
-├── result\     #从板端pull回PC的运行result
-│   ├── test1_out.png
-│   ├── test2_out.png
-│   ├── test3_out.png
-│   └── test4_out.png
-├── src\        #工程源代码
-│   ├── lprnet.cc
-│   ├── main.cc             #保留为空，不参与编译
-│   ├── main_video.cc       #视频 demo 主函数
-│   ├── main_video1.cc      #初版基础上将CPU画矩形框改为用RGA画矩形框
-│   ├── main_video2.cc      #1版基础上加上了耗时与性能分析
-│   ├── postprocess.cc
-│   └── yolov8_zero_copy.cc
-├── utils\      #封装的常用函数包,只需关注mpp相关
-│   ├── audio_utils.c
-│   ├── audio_utils.h
-│   ├── CMakeLists.txt      #CMakeLists.txt,目前的处理图片的demo所需的相关代码已经写入其中
-│   ├── common.h
-│   ├── file_utils.c
-│   ├── file_utils.h
-│   ├── font.h
-│   ├── image_drawing.c     #图片后处理，有画矩形框框选车牌函数draw_rectangle与画文字函数draw_text
-│   ├── image_drawing.h
-│   ├── image_utils.c
-│   ├── image_utils.h
-│   ├── mpp_decoder.cpp
-│   ├── mpp_decoder.h
-│   ├── mpp_encoder.cpp
-│   ├── mpp_encoder.h
-│   ├── plate_font.h
-│   └── rga_fill_rectangle_task_array_demo.cpp
-├── build-linux.sh      #交叉编译命令脚本
-├── CMakeLists.txt      #根文件CMakeLists.txt,在其中引入前两份CMakeLists.txt的内容,整个工程链接用,重要！！
-├── generate_c_font_array.py        #生成字符点阵字符用
-├── README.md
-├── rknn_perf.log
-├── rknn_perf2.log      #两份demo运行日志,分析运行结果用,从板端pull回,重要！！
-└── 上板结果.txt
-```
+
 ## Linux环境搭建
 
 1. 首先安装虚拟机，Ubuntu20即可，建议分配至少20g，内存6g，处理器2个每个4核，可根据自己电脑性能调整
@@ -187,6 +130,7 @@ adb push install/rk356x_linux_aarch64/rknn_yolov8_lpr_demo /userdata/
 
 adb push install/rk356x_linux_aarch64/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo /userdata/rknn_yolov8_lpr_demo
 adb push install/rk356x_linux_aarch64/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo /userdata/rknn_yolov8_lpr_demo
+adb push install/rk356x_linux_aarch64/rknn_yolov8_lpr_demo/yolov8_lpr_pcie_demo /userdata/rknn_yolov8_lpr_demo
 
 adb push model/testX.jpg /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo/test
 adb push model/testvideoX.h264 /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo/test
@@ -197,15 +141,22 @@ adb push model/testvideoX.h264 /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_d
 ```shell
 # 切到命令行模式，立刻关闭3568桌面
 sudo systemctl isolate multi-user.target
+# 直接使用 DRM/KMS 的 demo 必须在桌面服务停止后运行；否则 DRM master 获取会失败并拒绝启动
+systemctl is-active display-manager 2>/dev/null || true
+
+# 若仍报告 Device or resource busy，定位两个 card 的实际占用者
+sudo fuser -v /dev/dri/card0 /dev/dri/card1 2>/dev/null || true
+sudo mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
+for clients in /sys/kernel/debug/dri/*/clients; do
+    [ -r "$clients" ] || continue
+    echo "=== $clients ==="
+    cat "$clients"
+done
+# 使用 ps -fp <PID> 和 systemctl status <PID> 确认所属服务，再用 systemctl stop <实际服务名> 停止；不要只 kill 会被自动拉起的进程
+
 # 恢复桌面
 sudo systemctl set-default graphical.target
 sudo reboot
-```
-
-板端 PMIC/I2C 电源管理异常
-```shell
-cd /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo
-./vpu_preflight.sh
 ```
 
 ```shell
@@ -214,24 +165,15 @@ cd /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo
 adb shell 
 chmod +x /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo/yolov8_lpr_picture_demo
 chmod +x /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo/yolov8_lpr_video_demo
+chmod +x /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_pcie_demo/yolov8_lpr_pcie_demo
 # export LD_LIBRARY_PATH=./lib
+```
 
+```shell
 #推理单图片
 cd /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo
 ./yolov8_lpr_picture_demo ./model/yolov8.rknn ./model/lprnet7repair_fp.rknn ./model/lprnet8repair_fp.rknn ./test/test1.jpg
 for img in ./test/test{1..4}.jpg; do ./yolov8_lpr_picture_demo ./model/yolov8.rknn ./model/lprnet7repair_fp.rknn ./model/lprnet8repair_fp.rknn $img; done
-
-#推理视频
-cd /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo
-./vpu_preflight.sh
-# 看到 "VPU preflight passed" 后，再手动运行 yolov8_lpr_video_demo。
-
-#退出板端终端命令为logout
-
-#主终端使用
-#拉取结果
-adb pull /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo/result ./result/picture
-adb pull /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo/result ./result/video
 ```
 
 ```shell
@@ -246,6 +188,73 @@ cd /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo
 ./yolov8_lpr_picture_demo ./model/yolov8.rknn ./model/lprnet7repair_i8.rknn ./model/lprnet8repair_i8.rknn ./test/test2.jpg > rknn_perf2repair_i8.log 2>&1
 #主终端使用
 adb pull /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo/result ./result/picture ; adb pull /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo/rknn_perf2repair_i8.log ./result/log
+```
+
+```shell
+#推理视频
+cd /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo
+./vpu_preflight.sh
+#板端 PMIC/I2C 电源管理异常,看到"VPU preflight passed"后,再手动运行yolov8_lpr_video_demo
+./yolov8_lpr_video_demo ./model/yolov8.rknn ./model/lprnet7repair_i8.rknn ./model/lprnet8repair_i8.rknn ./test/testvideo1.h264 0
+```
+
+```shell
+#pcie_demo
+1. 检查内核版本和 PCIe 枚举/链路状态。`modinfo` 不存在时，以本文记录的 vermagic 和 `uname -r` 人工比对：
+
+uname -a
+uname -r
+if command -v modinfo >/dev/null 2>&1; then
+    modinfo ./pango_pci_driver.ko | grep -E 'name|vermagic'
+fi
+
+if command -v lspci >/dev/null 2>&1; then
+    lspci -nn
+    lspci -vv | grep -E '^[0-9a-fA-F]+:|LnkCap:|LnkSta:'
+fi
+
+# 板端没有 lspci 时使用 sysfs 检查枚举结果
+for dev in /sys/bus/pci/devices/*; do
+    [ -f "$dev/vendor" ] || continue
+    echo "$(basename "$dev") vendor=$(cat "$dev/vendor") device=$(cat "$dev/device")"
+    [ -f "$dev/current_link_speed" ] && echo "  speed=$(cat "$dev/current_link_speed") width=$(cat "$dev/current_link_width")"
+done
+
+如果 `lspci` 和 `/sys/bus/pci/devices/` 都没有显示 FPGA Endpoint，应先检查 FPGA 上电、PCIe 参考时钟、复位、RK3568 Root Complex 配置和物理链路，不要继续运行 demo。
+
+2. 卸载可能残留的旧模块，再加载随 demo 安装的模块：
+
+cd /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_pcie_demo
+if lsmod | grep -q '^pango_pci_driver '; then
+    rmmod pango_pci_driver
+fi
+insmod ./pango_pci_driver.ko
+
+lsmod | grep pango_pci_driver
+ls -l /dev/pango_pci_driver
+dmesg | tail -n 80 | grep -Ei 'pango|pci|bar|dma|error|fail'
+
+只有模块出现在 `lsmod`、`/dev/pango_pci_driver` 存在且 `dmesg` 无 probe/BAR/DMA 致命错误时，才继续运行。若 `insmod` 返回 `Invalid module format`，应检查 `uname -r`、模块 vermagic 和 `dmesg`，不能使用 `-f` 强制加载。
+
+3. 启动 PCIe demo：
+
+cd /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_pcie_demo
+./yolov8_lpr_pcie_demo ./model/yolov8.rknn ./model/lprnet7repair_fp.rknn ./model/lprnet8repair_fp.rknn
+
+正常启动应依次看到 PCIe vendor/device、Link Gen/Width、MPS、BGR565 1280×720 采集启动信息。首次成功读取通常会输出 `read returned driver status 2`；这里的 `2` 是驱动成功状态码，表示 DMA 缓冲区中已有一帧完整的 1843200 字节图像。
+
+4. 使用 `Ctrl+C` 退出。终端应先打印 `PCIe: stop requested`，随后打印 PCIe Pipeline Statistics；同时确认启动日志类似 `DRM: UI framebuffer 1280x720 -> display mode 1920x1080 (preferred), VOP plane scaling`，画面持续覆盖整个显示区域，且退出时没有 DMA unmap 错误。若出现 `cannot acquire master`，必须先停止桌面显示服务，不能让 demo 与桌面同时控制 KMS：
+
+dmesg | tail -n 80 | grep -Ei 'pango|pci|bar|dma|error|fail'
+```
+
+```shell
+#退出板端终端命令为logout
+
+#主终端使用
+#拉取结果
+adb pull /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_picture_demo/result ./result/picture
+adb pull /userdata/rknn_yolov8_lpr_demo/yolov8_lpr_video_demo/result ./result/video
 ```
 
 ## 性能监控

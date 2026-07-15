@@ -42,3 +42,4 @@ rknn
 2_Model_Conversion_PC_Simulation/ultralytics_yolov8
 3_NPU_Yolov8_LPR_Demo/result
 yolo_-lprnet_-pytorch-master
+pcie_720p

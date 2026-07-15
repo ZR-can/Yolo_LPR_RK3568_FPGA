@@ -48,14 +48,21 @@ set(DEMO_COMMON_SRCS
 
 set(TARGET_PICTURE yolov8_lpr_picture_demo)
 set(TARGET_VIDEO yolov8_lpr_video_demo)
+set(TARGET_PCIE yolov8_lpr_pcie_demo)
+set(PCIE_DRIVER_MODULE "${CMAKE_CURRENT_SOURCE_DIR}/pango_pci_driver.ko")
+
+if (NOT EXISTS "${PCIE_DRIVER_MODULE}")
+    message(FATAL_ERROR "PCIe driver module is missing: ${PCIE_DRIVER_MODULE}")
+endif()
 
 add_executable(${TARGET_PICTURE} src/main_picture.cc ${DEMO_COMMON_SRCS})
 add_executable(${TARGET_VIDEO} src/main_video.cc ${DEMO_COMMON_SRCS})
+add_executable(${TARGET_PCIE} src/main_pcie.cc src/pcie_frame_source.cc ${DEMO_COMMON_SRCS})
 
 # 获取通用的模型文件
 file(GLOB RKNN_FILES "${CMAKE_CURRENT_SOURCE_DIR}/model/*.rknn")
 file(GLOB TXT_FILES "${CMAKE_CURRENT_SOURCE_DIR}/model/*.txt")
-foreach(TARGET_NAME ${TARGET_PICTURE} ${TARGET_VIDEO})
+foreach(TARGET_NAME ${TARGET_PICTURE} ${TARGET_VIDEO} ${TARGET_PCIE})
     target_compile_definitions(${TARGET_NAME} PRIVATE ZERO_COPY)
 
     target_include_directories(${TARGET_NAME} PRIVATE
@@ -71,12 +78,15 @@ foreach(TARGET_NAME ${TARGET_PICTURE} ${TARGET_VIDEO})
         imageutils
         fileutils
         imagedrawing
-        mpputils
         ${LIBRKNNRT}
         ${OpenCV_LIBS}
         dl
         Threads::Threads
     )
+
+    if (NOT "${TARGET_NAME}" STREQUAL "${TARGET_PCIE}")
+        target_link_libraries(${TARGET_NAME} mpputils)
+    endif()
 
     if (CMAKE_SYSTEM_NAME STREQUAL "Android")
         target_link_libraries(${TARGET_NAME} log)
@@ -100,5 +110,7 @@ foreach(TARGET_NAME ${TARGET_PICTURE} ${TARGET_VIDEO})
         )
         install(FILES ${TEST_VIDEO_FILES} DESTINATION ${TARGET_NAME}/test)
         install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/vpu_preflight.sh DESTINATION ${TARGET_NAME})
+    elseif (${TARGET_NAME} STREQUAL ${TARGET_PCIE})
+        install(FILES ${PCIE_DRIVER_MODULE} DESTINATION ${TARGET_NAME})
     endif()
 endforeach()

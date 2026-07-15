@@ -11,7 +11,8 @@
 class RgaOverlayRenderer {
 public:
     int Init(int width, int height);
-    int Render(image_buffer_t* ui_buffer, const std::vector<PipelineResult>& results);
+    int Render(image_buffer_t* ui_buffer, const std::vector<PipelineResult>& results,
+               bool clear_background = true);
 
 private:
     struct LabelSprite {

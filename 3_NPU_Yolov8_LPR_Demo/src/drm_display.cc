@@ -88,6 +88,7 @@ struct DrmAtomicState {
     int current_ui_index = -1;
     int write_ui_index = 0;
     bool initialized = false;
+    bool ui_commit_error_reported = false;
 };
 
 uint32_t GetPropertyId(const PlaneProperties& object, const char* name) {
@@ -180,13 +181,23 @@ int PickConnector(int fd, int requested_width, int requested_height, uint32_t* c
             continue;
         }
 
-        *mode = modes.front();
+        const drm_mode_modeinfo* selected_mode = nullptr;
         for (const drm_mode_modeinfo& candidate_mode : modes) {
-            if (candidate_mode.hdisplay == requested_width && candidate_mode.vdisplay == requested_height) {
-                *mode = candidate_mode;
+            if ((candidate_mode.type & DRM_MODE_TYPE_PREFERRED) != 0) {
+                selected_mode = &candidate_mode;
                 break;
             }
         }
+        if (selected_mode == nullptr) {
+            for (const drm_mode_modeinfo& candidate_mode : modes) {
+                if (candidate_mode.hdisplay == requested_width &&
+                    candidate_mode.vdisplay == requested_height) {
+                    selected_mode = &candidate_mode;
+                    break;
+                }
+            }
+        }
+        *mode = selected_mode != nullptr ? *selected_mode : modes.front();
         *connector_id = connector.connector_id;
         *crtc_index = selected_crtc_index;
         *crtc_id = crtcs[selected_crtc_index];
@@ -497,6 +508,13 @@ int OpenDisplayCard(DrmDisplay* display, int width, int height, drm_mode_modeinf
         if (fd < 0) {
             continue;
         }
+        if (ioctl(fd, DRM_IOCTL_SET_MASTER, 0) != 0) {
+            fprintf(stderr,
+                    "DRM: cannot acquire master on %s: %s; stop the desktop display service first\n",
+                    card, strerror(errno));
+            close(fd);
+            continue;
+        }
         uint32_t connector_id = 0;
         uint32_t crtc_id = 0;
         int crtc_index = -1;
@@ -506,6 +524,7 @@ int OpenDisplayCard(DrmDisplay* display, int width, int height, drm_mode_modeinf
             display->conn_id = connector_id;
             display->crtc_id = crtc_id;
             display->crtc_index = crtc_index;
+            display->master_acquired = true;
             return 0;
         }
         close(fd);
@@ -530,7 +549,15 @@ int drm_display_init(DrmDisplay* display, int width, int height) {
     state->mode = mode;
     display->mode_width = mode.hdisplay;
     display->mode_height = mode.vdisplay;
+    display->ui_width = width;
+    display->ui_height = height;
     display->atomic_state = state;
+    fprintf(stderr, "DRM: UI framebuffer %dx%d -> display mode %dx%d%s%s\n",
+            display->ui_width, display->ui_height,
+            display->mode_width, display->mode_height,
+            (mode.type & DRM_MODE_TYPE_PREFERRED) != 0 ? " (preferred)" : "",
+            (display->ui_width != display->mode_width ||
+             display->ui_height != display->mode_height) ? ", VOP plane scaling" : "");
 
     auto* original = new DrmCrtcState();
     original->conn_id = display->conn_id;
@@ -540,8 +567,8 @@ int drm_display_init(DrmDisplay* display, int width, int height) {
     if (ReadProperties(display->drm_fd, display->crtc_id, DRM_MODE_OBJECT_CRTC, &state->crtc) != 0 ||
         ReadProperties(display->drm_fd, display->conn_id, DRM_MODE_OBJECT_CONNECTOR, &state->connector) != 0 ||
         FindUiPlane(display->drm_fd, display->crtc_index, state) != 0 ||
-        CreateUiBuffer(display->drm_fd, display->mode_width, display->mode_height, &state->ui_buffers[0]) != 0 ||
-        CreateUiBuffer(display->drm_fd, display->mode_width, display->mode_height, &state->ui_buffers[1]) != 0) {
+        CreateUiBuffer(display->drm_fd, display->ui_width, display->ui_height, &state->ui_buffers[0]) != 0 ||
+        CreateUiBuffer(display->drm_fd, display->ui_width, display->ui_height, &state->ui_buffers[1]) != 0) {
         fprintf(stderr, "DRM: NV12/ABGR dual plane setup failed\n");
         drm_display_deinit(display);
         return -1;
@@ -568,13 +595,41 @@ int drm_display_get_ui_buffer(DrmDisplay* display, image_buffer_t* ui_buffer) {
         return -1;
     }
     memset(ui_buffer, 0, sizeof(*ui_buffer));
-    ui_buffer->width = display->mode_width;
-    ui_buffer->height = display->mode_height;
+    ui_buffer->width = display->ui_width;
+    ui_buffer->height = display->ui_height;
     ui_buffer->width_stride = buffer.pitch / 4;
-    ui_buffer->height_stride = display->mode_height;
+    ui_buffer->height_stride = display->ui_height;
     ui_buffer->format = IMAGE_FORMAT_RGBA8888;
     ui_buffer->size = buffer.size;
     ui_buffer->fd = buffer.dmabuf_fd;
+    return 0;
+}
+
+int drm_display_commit_ui(DrmDisplay* display) {
+    if (display == nullptr || display->atomic_state == nullptr) {
+        return -1;
+    }
+    auto* state = static_cast<DrmAtomicState*>(display->atomic_state);
+    AtomicRequest request;
+    if (!state->initialized) {
+        AddModesetRequest(&request, *state, display);
+    }
+    const DumbBuffer& buffer = state->ui_buffers[state->write_ui_index];
+    AddPlaneRequest(&request, state->ui_plane, display->crtc_id, buffer.fb_id,
+                    display->ui_width, display->ui_height,
+                    display->mode_width, display->mode_height, 1);
+    const uint32_t flags = state->initialized ? 0 : DRM_MODE_ATOMIC_ALLOW_MODESET;
+    if (CommitAtomic(display->drm_fd, request, flags) != 0) {
+        if (!state->ui_commit_error_reported) {
+            fprintf(stderr, "DRM: atomic UI commit failed: %s\n", strerror(errno));
+            state->ui_commit_error_reported = true;
+        }
+        return -1;
+    }
+    state->ui_commit_error_reported = false;
+    state->current_ui_index = state->write_ui_index;
+    state->write_ui_index = 1 - state->current_ui_index;
+    state->initialized = true;
     return 0;
 }
 
@@ -591,23 +646,7 @@ int drm_display_present(DrmDisplay* display, const image_buffer_t* image) {
         return -1;
     }
 
-    auto* state = static_cast<DrmAtomicState*>(display->atomic_state);
-    AtomicRequest request;
-    if (!state->initialized) {
-        AddModesetRequest(&request, *state, display);
-    }
-    const DumbBuffer& buffer = state->ui_buffers[state->write_ui_index];
-    AddPlaneRequest(&request, state->ui_plane, display->crtc_id, buffer.fb_id,
-                    display->mode_width, display->mode_height,
-                    display->mode_width, display->mode_height, 1);
-    const uint32_t flags = state->initialized ? 0 : DRM_MODE_ATOMIC_ALLOW_MODESET;
-    if (CommitAtomic(display->drm_fd, request, flags) != 0) {
-        return -1;
-    }
-    state->current_ui_index = state->write_ui_index;
-    state->write_ui_index = 1 - state->current_ui_index;
-    state->initialized = true;
-    return 0;
+    return drm_display_commit_ui(display);
 }
 
 int drm_display_present_nv12(DrmDisplay* display, const image_buffer_t* video_buffer) {
@@ -638,7 +677,7 @@ int drm_display_present_nv12(DrmDisplay* display, const image_buffer_t* video_bu
                     video_buffer->width, video_buffer->height,
                     display->mode_width, display->mode_height, 0);
     AddPlaneRequest(&request, state->ui_plane, display->crtc_id, ui_buffer.fb_id,
-                    display->mode_width, display->mode_height,
+                    display->ui_width, display->ui_height,
                     display->mode_width, display->mode_height, 1);
 
     const uint32_t flags = state->initialized ? 0 : DRM_MODE_ATOMIC_ALLOW_MODESET;
@@ -685,6 +724,14 @@ void drm_display_deinit(DrmDisplay* display) {
         display->atomic_state = nullptr;
     }
 
+    if (display->master_acquired) {
+        ioctl(display->drm_fd, DRM_IOCTL_DROP_MASTER, 0);
+        display->master_acquired = false;
+    }
     close(display->drm_fd);
     display->drm_fd = -1;
+    display->mode_width = 0;
+    display->mode_height = 0;
+    display->ui_width = 0;
+    display->ui_height = 0;
 }
