@@ -30,7 +30,10 @@ find_package(Threads REQUIRED)
 
 set(QT_PCIE_SRCS
     "${DEMO_ROOT}/src/main_pcie_qt.cc"
+    "${DEMO_ROOT}/src/pcie_qt_window.cc"
+    "${DEMO_ROOT}/src/pcie_qt_window.h"
     "${DEMO_ROOT}/src/pcie_qt_ui_helpers.cc"
+    "${DEMO_ROOT}/src/pcie_qt_ui_helpers.h"
     "${DEMO_ROOT}/src/mainwindow.ui"
     "${DEMO_ROOT}/src/pcie_frame_source.cc"
     "${DEMO_ROOT}/src/postprocess.cc"

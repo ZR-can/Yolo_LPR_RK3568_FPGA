@@ -127,7 +127,10 @@ if (ENABLE_QT_UI)
     set(TARGET_PCIE_QT yolov8_lpr_pcie_qt_ui)
     add_executable(${TARGET_PCIE_QT}
         src/main_pcie_qt.cc
+        src/pcie_qt_window.cc
+        src/pcie_qt_window.h
         src/pcie_qt_ui_helpers.cc
+        src/pcie_qt_ui_helpers.h
         src/mainwindow.ui
         src/pcie_frame_source.cc
         src/postprocess.cc
