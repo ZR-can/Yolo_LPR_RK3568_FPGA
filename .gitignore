@@ -30,6 +30,8 @@ install/
 3_NPU_Yolov8_LPR_Demo/model/test*
 3_NPU_Yolov8_LPR_Demo/*.log
 3_NPU_Yolov8_LPR_Demo/**/*.log
+3_NPU_Yolov8_LPR_Demo/qt_pcie_lpr_ui/qmake.tar
+3_NPU_Yolov8_LPR_Demo/qt_pcie_lpr_ui/qt-everywhere-src-*.tar*
 *dataset/
 *images/
 *imgs/

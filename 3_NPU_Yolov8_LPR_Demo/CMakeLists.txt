@@ -4,6 +4,7 @@ project(yolov8_lpr_demo)
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+option(ENABLE_QT_UI "Build the Qt PCIe LPR UI target" OFF)
 
 if (ENABLE_ASAN)
     message(STATUS "BUILD WITH ADDRESS SANITIZER")
@@ -50,6 +51,7 @@ set(TARGET_PICTURE yolov8_lpr_picture_demo)
 set(TARGET_VIDEO yolov8_lpr_video_demo)
 set(TARGET_PCIE yolov8_lpr_pcie_demo)
 set(PCIE_DRIVER_MODULE "${CMAKE_CURRENT_SOURCE_DIR}/pango_pci_driver.ko")
+set(CHINESE_FONT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/simhei.ttf")
 
 if (NOT EXISTS "${PCIE_DRIVER_MODULE}")
     message(FATAL_ERROR "PCIe driver module is missing: ${PCIE_DRIVER_MODULE}")
@@ -114,3 +116,54 @@ foreach(TARGET_NAME ${TARGET_PICTURE} ${TARGET_VIDEO} ${TARGET_PCIE})
         install(FILES ${PCIE_DRIVER_MODULE} DESTINATION ${TARGET_NAME})
     endif()
 endforeach()
+
+if (ENABLE_QT_UI)
+    set(CMAKE_AUTOMOC ON)
+    set(CMAKE_AUTOUIC ON)
+    set(CMAKE_AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+    find_package(Qt5 REQUIRED COMPONENTS Widgets)
+
+    set(TARGET_PCIE_QT yolov8_lpr_pcie_qt_ui)
+    add_executable(${TARGET_PCIE_QT}
+        src/main_pcie_qt.cc
+        src/pcie_qt_ui_helpers.cc
+        src/mainwindow.ui
+        src/pcie_frame_source.cc
+        src/postprocess.cc
+        src/yolov8_zero_copy.cc
+        src/lprnet.cc
+        src/yolo_lpr_pipeline.cc
+        src/simple_tracker.cc
+    )
+
+    target_compile_definitions(${TARGET_PCIE_QT} PRIVATE ZERO_COPY)
+
+    target_include_directories(${TARGET_PCIE_QT} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/utils
+        ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/allocator/drm
+        ${LIBRKNNRT_INCLUDES}
+    )
+
+    target_link_libraries(${TARGET_PCIE_QT}
+        Qt5::Widgets
+        imageutils
+        fileutils
+        imagedrawing
+        ${LIBRKNNRT}
+        ${OpenCV_LIBS}
+        m
+        dl
+        Threads::Threads
+    )
+
+    install(TARGETS ${TARGET_PCIE_QT} DESTINATION ${TARGET_PCIE_QT})
+    install(FILES ${RKNN_FILES} DESTINATION ${TARGET_PCIE_QT}/model)
+    install(FILES ${TXT_FILES} DESTINATION ${TARGET_PCIE_QT}/model)
+    if (EXISTS "${CHINESE_FONT_FILE}")
+        install(FILES ${CHINESE_FONT_FILE} DESTINATION ${TARGET_PCIE_QT}/model)
+    endif()
+    install(FILES ${PCIE_DRIVER_MODULE} DESTINATION ${TARGET_PCIE_QT})
+endif()
