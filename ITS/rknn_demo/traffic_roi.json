@@ -1,0 +1,24 @@
+{
+  "image_size_hint": [1280, 720],
+  "regions": [
+    {
+      "name": "road_lane",
+      "label": "motor vehicle lane",
+      "type": "polygon",
+      "points_norm": [[0.12, 0.55], [0.92, 0.50], [1.00, 1.00], [0.00, 1.00]]
+    },
+    {
+      "name": "crosswalk",
+      "label": "crosswalk / pedestrian area",
+      "type": "polygon",
+      "points_norm": [[0.34, 0.46], [0.70, 0.44], [0.88, 0.68], [0.22, 0.73]]
+    }
+  ],
+  "rules": {
+    "person_in_road_lane": true,
+    "vehicle_in_crosswalk": true,
+    "mixed_traffic_in_crosswalk": true,
+    "road_vehicle_density_threshold": 4
+  }
+}
+

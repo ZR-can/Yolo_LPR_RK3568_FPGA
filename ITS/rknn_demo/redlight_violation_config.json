@@ -1,0 +1,14 @@
+{
+  "crosswalk_mode": "lower_half",
+  "crosswalk_polygon": [],
+  "crosswalk_polygon_norm": [],
+  "crosswalk_bbox_norm": [0.442679, 0.731203, 0.877522, 0.249988],
+  "crosswalk_y_ratio": 0.5,
+  "bottom_line_samples": 5,
+  "bottom_line_min_inside": 1,
+  "color_min_saturation": 70,
+  "color_min_value": 90,
+  "color_min_pixels": 8,
+  "color_dominance_ratio": 1.2,
+  "light_box_expand_ratio": 0.1
+}

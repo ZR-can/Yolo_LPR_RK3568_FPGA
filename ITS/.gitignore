@@ -1,0 +1,20 @@
+**/__pycache__/
+*.pyc
+
+# Generated build and deployment outputs
+rknn_demo/build/
+rknn_demo/install/
+rknn_demo/board_outputs/
+rknn_demo/pc_outputs/
+rknn_demo/test_frames/
+rknn_demo/test_frames.tar.gz
+
+# Locally downloaded SDK/toolkit cache
+rknn_demo/rknn-toolkit2/
+
+# Demo scratch outputs
+pc_demo/outputs/
+
+# Raw video archive is kept locally because some files exceed GitHub's normal
+# 100 MB file limit. Keep only the small current test videos under video/.
+videoready/*.mp4
