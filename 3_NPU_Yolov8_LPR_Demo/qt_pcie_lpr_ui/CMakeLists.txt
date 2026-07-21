@@ -29,9 +29,8 @@ find_package(Qt5 REQUIRED COMPONENTS Widgets)
 find_package(Threads REQUIRED)
 
 set(QT_PCIE_SRCS
+    "${DEMO_ROOT}/src/main_pcie.cc"
     "${DEMO_ROOT}/src/main_pcie_qt.cc"
-    "${DEMO_ROOT}/src/pcie_qt_window.cc"
-    "${DEMO_ROOT}/src/pcie_qt_window.h"
     "${DEMO_ROOT}/src/pcie_qt_ui_helpers.cc"
     "${DEMO_ROOT}/src/pcie_qt_ui_helpers.h"
     "${DEMO_ROOT}/src/mainwindow.ui"
@@ -41,11 +40,13 @@ set(QT_PCIE_SRCS
     "${DEMO_ROOT}/src/lprnet.cc"
     "${DEMO_ROOT}/src/yolo_lpr_pipeline.cc"
     "${DEMO_ROOT}/src/simple_tracker.cc"
+    "${DEMO_ROOT}/src/drm_display.cc"
+    "${DEMO_ROOT}/src/rga_overlay_renderer.cc"
 )
 
 add_executable(yolov8_lpr_pcie_qt_ui ${QT_PCIE_SRCS})
 
-target_compile_definitions(yolov8_lpr_pcie_qt_ui PRIVATE ZERO_COPY)
+target_compile_definitions(yolov8_lpr_pcie_qt_ui PRIVATE ZERO_COPY PCIE_QT_UI_BUILD)
 
 target_include_directories(yolov8_lpr_pcie_qt_ui PRIVATE
     "${DEMO_ROOT}"

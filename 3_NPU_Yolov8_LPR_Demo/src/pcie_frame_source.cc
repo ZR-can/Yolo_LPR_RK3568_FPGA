@@ -70,7 +70,7 @@ int PcieFrameSource::Open() {
         return 0;
     }
 
-    impl_->fd = open(PCIE_DRIVER_FILE_PATH, O_RDWR);
+    impl_->fd = open(PCIE_DRIVER_FILE_PATH, O_RDWR | O_NONBLOCK);
     if (impl_->fd < 0) {
         fprintf(stderr, "PCIe: open %s failed: %s\n", PCIE_DRIVER_FILE_PATH, strerror(errno));
         return -1;

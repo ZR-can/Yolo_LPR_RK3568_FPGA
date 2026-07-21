@@ -28,6 +28,23 @@ static char *labels[OBJ_CLASS_NUM];
 
 inline static int clamp(float val, int min, int max) { return val > min ? (val < max ? val : max) : min; }
 
+static bool is_enabled_class_id(int cls_id)
+{
+#if defined(ITS_TRAFFIC_CLASS_ONLY)
+    return cls_id == 0 ||   // person
+           cls_id == 1 ||   // bicycle
+           cls_id == 2 ||   // car
+           cls_id == 3 ||   // motorcycle
+           cls_id == 5 ||   // bus
+           cls_id == 7 ||   // truck
+           cls_id == 9 ||   // traffic light
+           cls_id == 11;    // stop sign
+#else
+    (void)cls_id;
+    return true;
+#endif
+}
+
 static char *readLine(FILE *fp, char *buffer, int *len)
 {
     int ch;
@@ -250,7 +267,7 @@ static int process_i8(int8_t *box_tensor, int32_t box_zp, float box_scale,
 
             int8_t max_score = -score_zp;
             for (int c= 0; c< OBJ_CLASS_NUM; c++){
-                if ((score_tensor[offset] > score_thres_i8) && (score_tensor[offset] > max_score))
+                if (is_enabled_class_id(c) && (score_tensor[offset] > score_thres_i8) && (score_tensor[offset] > max_score))
                 {
                     max_score = score_tensor[offset];
                     max_class_id = c;
@@ -323,7 +340,7 @@ static int process_u8(uint8_t *box_tensor, int32_t box_zp, float box_scale,
             uint8_t max_score = -score_zp;
             for (int c = 0; c < OBJ_CLASS_NUM; c++)
             {
-                if ((score_tensor[offset] > score_thres_u8) && (score_tensor[offset] > max_score))
+                if (is_enabled_class_id(c) && (score_tensor[offset] > score_thres_u8) && (score_tensor[offset] > max_score))
                 {
                     max_score = score_tensor[offset];
                     max_class_id = c;
@@ -392,7 +409,7 @@ static int process_fp32(float *box_tensor, float *score_tensor, float *score_sum
 
             float max_score = 0;
             for (int c= 0; c< OBJ_CLASS_NUM; c++){
-                if ((score_tensor[offset] > threshold) && (score_tensor[offset] > max_score))
+                if (is_enabled_class_id(c) && (score_tensor[offset] > threshold) && (score_tensor[offset] > max_score))
                 {
                     max_score = score_tensor[offset];
                     max_class_id = c;
@@ -463,7 +480,7 @@ static int process_i8_rv1106(int8_t *box_tensor, int32_t box_zp, float box_scale
             int8_t max_score = -score_zp;
             offset = offset * OBJ_CLASS_NUM;
             for (int c = 0; c < OBJ_CLASS_NUM; c++) {
-                if ((score_tensor[offset + c] > score_thres_i8) && (score_tensor[offset + c] > max_score)) {
+                if (is_enabled_class_id(c) && (score_tensor[offset + c] > score_thres_i8) && (score_tensor[offset + c] > max_score)) {
                     max_score = score_tensor[offset + c]; //80类 [1, 80, 80, 80] 3588NCHW 1106NHWC
                     max_class_id = c;
                 }

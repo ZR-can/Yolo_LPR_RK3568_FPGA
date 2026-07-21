@@ -126,21 +126,16 @@ if (ENABLE_QT_UI)
 
     set(TARGET_PCIE_QT yolov8_lpr_pcie_qt_ui)
     add_executable(${TARGET_PCIE_QT}
+        src/main_pcie.cc
         src/main_pcie_qt.cc
-        src/pcie_qt_window.cc
-        src/pcie_qt_window.h
         src/pcie_qt_ui_helpers.cc
         src/pcie_qt_ui_helpers.h
         src/mainwindow.ui
         src/pcie_frame_source.cc
-        src/postprocess.cc
-        src/yolov8_zero_copy.cc
-        src/lprnet.cc
-        src/yolo_lpr_pipeline.cc
-        src/simple_tracker.cc
+        ${DEMO_COMMON_SRCS}
     )
 
-    target_compile_definitions(${TARGET_PCIE_QT} PRIVATE ZERO_COPY)
+    target_compile_definitions(${TARGET_PCIE_QT} PRIVATE ZERO_COPY PCIE_QT_UI_BUILD)
 
     target_include_directories(${TARGET_PCIE_QT} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}

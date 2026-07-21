@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -15,6 +16,7 @@
 
 #include "drm_display.h"
 #include "image_utils.h"
+#include "pcie_demo_bridge.h"
 #include "pcie_frame_source.h"
 #include "rga_overlay_renderer.h"
 #include "simple_tracker.h"
@@ -165,14 +167,15 @@ struct LatestPipelineResult {
 };
 
 struct PciePerformance {
-    uint64_t captured_frames;
-    uint64_t frame_pool_drops;
-    uint64_t inference_jobs;
-    uint64_t inference_failures;
-    uint64_t displayed_frames;
-    uint64_t display_failures;
-    uint64_t overlay_failures;
-    uint64_t plate_results;
+    std::atomic<uint64_t> captured_frames;
+    std::atomic<uint64_t> frame_pool_drops;
+    std::atomic<uint64_t> inference_jobs;
+    std::atomic<uint64_t> inference_failures;
+    std::atomic<uint64_t> display_pipeline_frames;
+    std::atomic<uint64_t> displayed_frames;
+    std::atomic<uint64_t> display_failures;
+    std::atomic<uint64_t> overlay_failures;
+    std::atomic<uint64_t> plate_results;
     double inference_ms;
     double display_convert_ms;
     double overlay_ms;
@@ -184,6 +187,7 @@ struct PciePerformance {
           frame_pool_drops(0),
           inference_jobs(0),
           inference_failures(0),
+          display_pipeline_frames(0),
           displayed_frames(0),
           display_failures(0),
           overlay_failures(0),
@@ -245,7 +249,7 @@ std::vector<PipelineResult> BuildDisplayResults(PcieAppContext* context,
     if (result_frame_id >= 0 && result_frame_id != context->last_result_frame_id) {
         context->tracker.update(current_results, result_frame_id);
         context->last_result_frame_id = result_frame_id;
-        context->performance.plate_results += current_results.size();
+        context->performance.plate_results.fetch_add(current_results.size());
     }
 
     std::vector<PipelineResult> tracked_results;
@@ -266,6 +270,47 @@ std::vector<PipelineResult> BuildDisplayResults(PcieAppContext* context,
         }
     }
     return display_results;
+}
+
+PcieUiStatus BuildUiStatus(const PcieAppContext& context,
+                           const PcieFrameSource& source,
+                           uint64_t start_ms,
+                           bool worker_alive,
+                           bool capturing,
+                           bool pcie_open,
+                           const std::string& message,
+                           const std::string& plate_text,
+                           const std::string& plate_type = "",
+                           float plate_confidence = 0.0f) {
+    PcieUiStatus status;
+    status.worker_alive = worker_alive;
+    status.capturing = capturing;
+    status.pcie_open = pcie_open;
+    status.start_ms = start_ms;
+    status.elapsed_ms = NowMilliseconds() - start_ms;
+    status.captured_frames = context.performance.captured_frames.load();
+    status.display_pipeline_frames = context.performance.display_pipeline_frames.load();
+    status.displayed_frames = context.performance.displayed_frames.load();
+    status.inference_jobs = context.performance.inference_jobs.load();
+    status.inference_failures = context.performance.inference_failures.load();
+    status.frame_pool_drops = context.performance.frame_pool_drops.load();
+    status.display_queue_drops = context.display_queue.Dropped();
+    status.inference_queue_drops = context.inference_queue.Dropped();
+    const uint64_t displayed_frames = context.performance.displayed_frames.load();
+    if (displayed_frames > 0) {
+        status.avg_end_to_end_ms =
+            context.performance.end_to_end_ms / displayed_frames;
+    }
+    status.vendor_id = source.DeviceInfo().vendor_id;
+    status.device_id = source.DeviceInfo().device_id;
+    status.link_speed = source.DeviceInfo().link_speed;
+    status.link_width = source.DeviceInfo().link_width;
+    status.max_payload_size = source.DeviceInfo().max_payload_size;
+    status.message = message;
+    status.plate_text = plate_text;
+    status.plate_type = plate_type;
+    status.plate_confidence = plate_confidence;
+    return status;
 }
 
 void InferenceThread(PcieAppContext* context) {
@@ -290,17 +335,93 @@ void InferenceThread(PcieAppContext* context) {
     printf("[PCIe Inference] thread exited\n");
 }
 
-void DisplayThread(PcieAppContext* context) {
+void DisplayThread(PcieAppContext* context, const PcieUiCallbacks* callbacks,
+                   const PcieFrameSource& source, uint64_t start_ms) {
     printf("[PCIe Display] thread started\n");
-    if (!context->drm_initialized) {
+    const bool qt_mode = (callbacks != nullptr);
+    if (!context->drm_initialized && !qt_mode) {
         return;
     }
 
     std::shared_ptr<PcieFrame> frame;
     int consecutive_present_failures = 0;
     while (context->display_queue.WaitAndPop(&frame)) {
-        image_buffer_t ui_buffer;
         image_buffer_t raw_image = MakeBgr565Image(frame.get());
+        if (qt_mode) {
+            // Qt paints on the main thread. If it is already behind, drop here
+            // before the BGR565->RGBA conversion and overlay work spend CPU.
+            if (callbacks != nullptr && callbacks->can_accept_frame &&
+                !callbacks->can_accept_frame()) {
+                frame.reset();
+                continue;
+            }
+
+            std::vector<unsigned char> rgba_pixels(PcieFrameSource::kFrameWidth *
+                                                   PcieFrameSource::kFrameHeight * 4U);
+            image_buffer_t ui_buffer;
+            memset(&ui_buffer, 0, sizeof(ui_buffer));
+            ui_buffer.width = PcieFrameSource::kFrameWidth;
+            ui_buffer.height = PcieFrameSource::kFrameHeight;
+            ui_buffer.width_stride = PcieFrameSource::kFrameWidth;
+            ui_buffer.height_stride = PcieFrameSource::kFrameHeight;
+            ui_buffer.format = IMAGE_FORMAT_RGBA8888;
+            ui_buffer.virt_addr = rgba_pixels.data();
+            ui_buffer.size = static_cast<int>(rgba_pixels.size());
+            ui_buffer.fd = -1;
+
+            std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+            if (convert_image(&raw_image, &ui_buffer, nullptr, nullptr, 0) != 0) {
+                context->performance.display_convert_ms += ElapsedMilliseconds(begin);
+                ++context->performance.display_failures;
+                frame.reset();
+                continue;
+            }
+            context->performance.display_convert_ms += ElapsedMilliseconds(begin);
+
+            begin = std::chrono::steady_clock::now();
+            const std::vector<PipelineResult> display_results =
+                BuildDisplayResults(context, frame->frame_id, ui_buffer.width, ui_buffer.height);
+            if (context->overlay_renderer.Render(&ui_buffer, display_results, false) != 0) {
+                ++context->performance.overlay_failures;
+            }
+            context->performance.overlay_ms += ElapsedMilliseconds(begin);
+            ++context->performance.display_pipeline_frames;
+            context->performance.end_to_end_ms += (double)(NowMilliseconds() - frame->enqueue_ms);
+            ++context->performance.displayed_frames;
+
+            std::string plate_text;
+            std::string plate_type;
+            float plate_confidence = 0.0f;
+            for (const PipelineResult& result : display_results) {
+                if (result.has_valid_plate_text && !result.plate_name.empty()) {
+                    plate_text = result.plate_name;
+                    plate_type = result.plate_type;
+                    plate_confidence = result.text_confidence > 0.0f
+                                           ? result.text_confidence
+                                           : result.confidence;
+                    break;
+                }
+            }
+
+            PcieUiStatus status = BuildUiStatus(*context, source, start_ms, true, true, true,
+                                                "", plate_text, plate_type, plate_confidence);
+            if (callbacks != nullptr && callbacks->on_status) {
+                callbacks->on_status(status);
+            }
+            if (callbacks != nullptr && callbacks->on_frame) {
+                PcieUiFrame ui_frame;
+                ui_frame.pixels = std::make_shared<std::vector<unsigned char> >(std::move(rgba_pixels));
+                ui_frame.width = ui_buffer.width;
+                ui_frame.height = ui_buffer.height;
+                ui_frame.stride = ui_buffer.width_stride > 0 ? ui_buffer.width_stride : ui_buffer.width;
+                ui_frame.frame_id = frame->frame_id;
+                callbacks->on_frame(ui_frame, status);
+            }
+            frame.reset();
+            continue;
+        }
+
+        image_buffer_t ui_buffer;
         if (drm_display_get_ui_buffer(&context->drm_display, &ui_buffer) != 0) {
             ++context->performance.display_failures;
             frame.reset();
@@ -323,6 +444,7 @@ void DisplayThread(PcieAppContext* context) {
             ++context->performance.overlay_failures;
         }
         context->performance.overlay_ms += ElapsedMilliseconds(begin);
+        ++context->performance.display_pipeline_frames;
 
         begin = std::chrono::steady_clock::now();
         if (drm_display_commit_ui(&context->drm_display) == 0) {
@@ -352,31 +474,49 @@ void PrintPerformance(const PcieAppContext& context, const PcieFrameSource& sour
                       uint64_t start_ms) {
     const double elapsed_seconds = std::max(0.001, (NowMilliseconds() - start_ms) / 1000.0);
     const PcieReadStatistics& driver = source.Statistics();
+    const uint64_t captured_frames = context.performance.captured_frames.load();
+    const uint64_t display_pipeline_frames = context.performance.display_pipeline_frames.load();
+    const uint64_t displayed_frames = context.performance.displayed_frames.load();
+    const uint64_t inference_jobs = context.performance.inference_jobs.load();
+    const uint64_t frame_pool_drops = context.performance.frame_pool_drops.load();
+    const uint64_t display_failures = context.performance.display_failures.load();
+    const uint64_t overlay_failures = context.performance.overlay_failures.load();
+    const uint64_t inference_failures = context.performance.inference_failures.load();
+    const uint64_t plate_results = context.performance.plate_results.load();
     printf("\n========== PCIe Pipeline Statistics ==========\n");
     printf("Captured: %llu (%.2f fps), pool drops: %llu\n",
-           (unsigned long long)context.performance.captured_frames,
-           context.performance.captured_frames / elapsed_seconds,
-           (unsigned long long)context.performance.frame_pool_drops);
-    printf("Displayed: %llu, queue drops: %llu, display failures: %llu, overlay failures: %llu\n",
-           (unsigned long long)context.performance.displayed_frames,
+           (unsigned long long)captured_frames,
+           captured_frames / elapsed_seconds,
+           (unsigned long long)frame_pool_drops);
+    printf("Display pipeline: %llu (%.2f fps)\n",
+           (unsigned long long)display_pipeline_frames,
+           display_pipeline_frames / elapsed_seconds);
+    printf("Display presented/handoff: %llu (%.2f fps), queue drops: %llu, display failures: %llu, overlay failures: %llu\n",
+           (unsigned long long)displayed_frames,
+           displayed_frames / elapsed_seconds,
            (unsigned long long)context.display_queue.Dropped(),
-           (unsigned long long)context.performance.display_failures,
-           (unsigned long long)context.performance.overlay_failures);
-    printf("Inference: %llu, queue drops: %llu, failures: %llu, plate results: %llu\n",
-           (unsigned long long)context.performance.inference_jobs,
+           (unsigned long long)display_failures,
+           (unsigned long long)overlay_failures);
+    printf("Inference: %llu (%.2f fps), queue drops: %llu, failures: %llu, plate results: %llu\n",
+           (unsigned long long)inference_jobs,
+           inference_jobs / elapsed_seconds,
            (unsigned long long)context.inference_queue.Dropped(),
-           (unsigned long long)context.performance.inference_failures,
-           (unsigned long long)context.performance.plate_results);
-    if (context.performance.inference_jobs > 0) {
+           (unsigned long long)inference_failures,
+           (unsigned long long)plate_results);
+    if (inference_jobs > 0) {
         printf("Average inference pipeline: %.2f ms\n",
-               context.performance.inference_ms / context.performance.inference_jobs);
+               context.performance.inference_ms / inference_jobs);
     }
-    if (context.performance.displayed_frames > 0) {
-        printf("Average display convert/overlay/present/end-to-end: %.2f / %.2f / %.2f / %.2f ms\n",
-               context.performance.display_convert_ms / context.performance.displayed_frames,
-               context.performance.overlay_ms / context.performance.displayed_frames,
-               context.performance.present_ms / context.performance.displayed_frames,
-               context.performance.end_to_end_ms / context.performance.displayed_frames);
+    if (display_pipeline_frames > 0) {
+        printf("Average display convert/overlay: %.2f / %.2f ms\n",
+               context.performance.display_convert_ms / display_pipeline_frames,
+               context.performance.overlay_ms / display_pipeline_frames);
+    }
+    if (displayed_frames > 0) {
+        const uint64_t present_attempts = std::max<uint64_t>(1, display_pipeline_frames);
+        printf("Average display present/end-to-end: %.2f / %.2f ms\n",
+               context.performance.present_ms / present_attempts,
+               context.performance.end_to_end_ms / displayed_frames);
     }
     printf("Driver retries: zero=%llu EPERM=%llu interrupted/EAGAIN=%llu, fatal errors=%llu\n",
            (unsigned long long)driver.zero_status_retries,
@@ -388,16 +528,21 @@ void PrintPerformance(const PcieAppContext& context, const PcieFrameSource& sour
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int RunPcieDemo(const char* yolov8_model,
+                const char* lprnet7_model,
+                const char* lprnet8_model,
+                const PcieUiCallbacks* callbacks) {
+    g_should_stop = 0;
     printf("========================================\n");
     printf("    YOLOv8 LPR PCIe BGR565 Demo         \n");
     printf("========================================\n\n");
 
-    if (argc != 4) {
-        printf("Usage: %s <yolov8_model> <lprnet7_model> <lprnet8_model>\n", argv[0]);
+    if (yolov8_model == nullptr || lprnet7_model == nullptr || lprnet8_model == nullptr) {
+        fprintf(stderr, "Model path is missing\n");
         return -1;
     }
-    if (InstallSignalHandlers() != 0) {
+    const bool use_signal_handlers = (callbacks == nullptr);
+    if (use_signal_handlers && InstallSignalHandlers() != 0) {
         fprintf(stderr, "Failed to install signal handlers\n");
         return -1;
     }
@@ -406,63 +551,119 @@ int main(int argc, char** argv) {
     PcieFrameSource source;
 
     printf("========== Initializing Pipeline ==========\n");
-    int ret = init_pipeline(argv[1], argv[2], argv[3], &context.pipeline);
+    int ret = init_pipeline(yolov8_model, lprnet7_model, lprnet8_model, &context.pipeline);
     if (ret != 0) {
         fprintf(stderr, "Pipeline initialization failed: %d\n", ret);
         return ret;
     }
 
     printf("========== Initializing Display ============\n");
-    if (drm_display_init(&context.drm_display, PcieFrameSource::kFrameWidth,
-                         PcieFrameSource::kFrameHeight) != 0 ||
-        context.overlay_renderer.Init(context.drm_display.ui_width,
-                                      context.drm_display.ui_height) != 0) {
-        fprintf(stderr, "PCIe display initialization failed\n");
-        drm_display_deinit(&context.drm_display);
-        release_pipeline(&context.pipeline);
-        return -1;
+    if (callbacks == nullptr) {
+        if (drm_display_init(&context.drm_display, PcieFrameSource::kFrameWidth,
+                             PcieFrameSource::kFrameHeight) != 0 ||
+            context.overlay_renderer.Init(context.drm_display.ui_width,
+                                          context.drm_display.ui_height) != 0) {
+            fprintf(stderr, "PCIe display initialization failed\n");
+            drm_display_deinit(&context.drm_display);
+            release_pipeline(&context.pipeline);
+            return -1;
+        }
+        context.drm_initialized = true;
+    } else {
+        if (context.overlay_renderer.Init(PcieFrameSource::kFrameWidth,
+                                          PcieFrameSource::kFrameHeight) != 0) {
+            fprintf(stderr, "Qt display overlay initialization failed\n");
+            release_pipeline(&context.pipeline);
+            return -1;
+        }
     }
-    context.drm_initialized = true;
 
     printf("========== Initializing PCIe ==============\n");
     if (source.Open() != 0) {
-        drm_display_deinit(&context.drm_display);
-        context.drm_initialized = false;
+        if (context.drm_initialized) {
+            drm_display_deinit(&context.drm_display);
+            context.drm_initialized = false;
+        }
         release_pipeline(&context.pipeline);
         return -1;
     }
 
-    const int signal_mask_result = SetTerminationSignalMask(SIG_BLOCK);
-    if (signal_mask_result != 0) {
-        fprintf(stderr, "Failed to block worker termination signals: %s\n",
-                strerror(signal_mask_result));
-        source.Close();
-        drm_display_deinit(&context.drm_display);
-        context.drm_initialized = false;
-        release_pipeline(&context.pipeline);
-        return -1;
+    if (use_signal_handlers) {
+        const int signal_mask_result = SetTerminationSignalMask(SIG_BLOCK);
+        if (signal_mask_result != 0) {
+            fprintf(stderr, "Failed to block worker termination signals: %s\n",
+                    strerror(signal_mask_result));
+            source.Close();
+            if (context.drm_initialized) {
+                drm_display_deinit(&context.drm_display);
+                context.drm_initialized = false;
+            }
+            release_pipeline(&context.pipeline);
+            return -1;
+        }
     }
 
     const uint64_t start_ms = NowMilliseconds();
     std::thread inference_thread(InferenceThread, &context);
-    std::thread display_thread(DisplayThread, &context);
-    const int signal_unmask_result = SetTerminationSignalMask(SIG_UNBLOCK);
-    if (signal_unmask_result != 0) {
-        fprintf(stderr, "Failed to route termination signals to the capture thread: %s\n",
-                strerror(signal_unmask_result));
-        g_should_stop = 1;
+    std::thread display_thread(DisplayThread, &context, callbacks, std::cref(source), start_ms);
+    if (use_signal_handlers) {
+        const int signal_unmask_result = SetTerminationSignalMask(SIG_UNBLOCK);
+        if (signal_unmask_result != 0) {
+            fprintf(stderr, "Failed to route termination signals to the capture thread: %s\n",
+                    strerror(signal_unmask_result));
+            g_should_stop = 1;
+        }
     }
+
+    if (callbacks != nullptr && callbacks->on_status) {
+        callbacks->on_status(BuildUiStatus(context, source, start_ms, true, true, true,
+                                           "等待首帧", ""));
+    }
+
     std::vector<unsigned char> drain_buffer(PcieFrameSource::kFrameBytes);
     int next_frame_id = 0;
     int capture_result = 0;
+    uint64_t last_status_ms = start_ms;
+    uint64_t last_retry_log_ms = start_ms;
 
     printf("========== Capturing PCIe Frames ==========\n");
     while (!g_should_stop) {
-        std::shared_ptr<PcieFrame> frame = frame_pool.Acquire();
+        if (callbacks != nullptr && callbacks->should_stop && callbacks->should_stop()) {
+            g_should_stop = 1;
+            break;
+        }
+        const bool capture_enabled =
+            !(callbacks != nullptr && callbacks->capture_enabled && !callbacks->capture_enabled());
+        std::shared_ptr<PcieFrame> frame = capture_enabled ? frame_pool.Acquire()
+                                                           : std::shared_ptr<PcieFrame>();
         unsigned char* destination = frame ? frame->pixels.data() : drain_buffer.data();
         const PcieFrameReadResult read_result =
             source.ReadFrame(destination, PcieFrameSource::kFrameBytes);
         if (read_result == PCIE_FRAME_RETRY) {
+            const uint64_t now_ms = NowMilliseconds();
+            if (now_ms - last_retry_log_ms >= 2000U) {
+                const PcieReadStatistics& stats = source.Statistics();
+                fprintf(stderr,
+                        "PCIe: waiting for frame, last_status=%lld, ready=%llu, "
+                        "retry zero=%llu EPERM=%llu EINTR/EAGAIN=%llu other=%llu\n",
+                        source.LastDriverStatus(),
+                        (unsigned long long)stats.frames_ready,
+                        (unsigned long long)stats.zero_status_retries,
+                        (unsigned long long)stats.permission_retries,
+                        (unsigned long long)stats.interrupted_retries,
+                        (unsigned long long)stats.other_errors);
+                last_retry_log_ms = now_ms;
+            }
+            if (callbacks != nullptr && callbacks->on_status) {
+                if (now_ms - last_status_ms >= 1000U) {
+                    callbacks->on_status(BuildUiStatus(context, source, start_ms,
+                                                       true, capture_enabled, true,
+                                                       capture_enabled ? "等待PCIe帧数据"
+                                                                       : "暂停中，保持PCIe读取",
+                                                       ""));
+                    last_status_ms = now_ms;
+                }
+            }
             frame.reset();
             if (!g_should_stop) {
                 usleep(1000);
@@ -472,6 +673,19 @@ int main(int argc, char** argv) {
         if (read_result == PCIE_FRAME_FATAL) {
             capture_result = -1;
             break;
+        }
+
+        if (!capture_enabled) {
+            if (callbacks != nullptr && callbacks->on_status) {
+                const uint64_t now_ms = NowMilliseconds();
+                if (now_ms - last_status_ms >= 1000U) {
+                    callbacks->on_status(BuildUiStatus(context, source, start_ms,
+                                                       true, false, true,
+                                                       "paused, draining PCIe", ""));
+                    last_status_ms = now_ms;
+                }
+            }
+            continue;
         }
 
         const int frame_id = next_frame_id++;
@@ -512,3 +726,13 @@ int main(int argc, char** argv) {
     release_pipeline(&context.pipeline);
     return capture_result;
 }
+
+#ifndef PCIE_QT_UI_BUILD
+int main(int argc, char** argv) {
+    if (argc != 4) {
+        printf("Usage: %s <yolov8_model> <lprnet7_model> <lprnet8_model>\n", argv[0]);
+        return -1;
+    }
+    return RunPcieDemo(argv[1], argv[2], argv[3], nullptr);
+}
+#endif

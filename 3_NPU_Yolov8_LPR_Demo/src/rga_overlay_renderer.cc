@@ -182,7 +182,27 @@ void DrawBoldText(std::vector<unsigned char>* pixels, int image_w, int image_h, 
 }
 
 bool FillUi(image_buffer_t* image, unsigned int color) {
-    if (image == nullptr || image->fd < 0) {
+    if (image == nullptr) {
+        return false;
+    }
+    if (image->fd < 0 && image->virt_addr != nullptr && image->format == IMAGE_FORMAT_RGBA8888) {
+        const unsigned char alpha = static_cast<unsigned char>((color >> 24) & 0xff);
+        const unsigned char red = static_cast<unsigned char>((color >> 16) & 0xff);
+        const unsigned char green = static_cast<unsigned char>((color >> 8) & 0xff);
+        const unsigned char blue = static_cast<unsigned char>(color & 0xff);
+        const int stride = image->width_stride > 0 ? image->width_stride : image->width;
+        for (int y = 0; y < image->height; ++y) {
+            unsigned char* row = image->virt_addr + y * stride * 4;
+            for (int x = 0; x < image->width; ++x) {
+                row[x * 4 + 0] = red;
+                row[x * 4 + 1] = green;
+                row[x * 4 + 2] = blue;
+                row[x * 4 + 3] = alpha;
+            }
+        }
+        return true;
+    }
+    if (image->fd < 0) {
         return false;
     }
     const int format = ToRgaFormat(image->format);
@@ -208,14 +228,9 @@ bool FillRectangle(const rga_buffer_t& target, int x, int y, int width, int heig
 
 bool DrawRectangle(image_buffer_t* image, int x, int y, int width, int height,
                    unsigned int color, int thickness) {
-    if (image == nullptr || image->fd < 0 || width <= 0 || height <= 0) {
+    if (image == nullptr || width <= 0 || height <= 0) {
         return false;
     }
-    const int format = ToRgaFormat(image->format);
-    if (format < 0) {
-        return false;
-    }
-
     const int x0 = Clamp(x, 0, image->width);
     const int y0 = Clamp(y, 0, image->height);
     const int x1 = Clamp(x + width, 0, image->width);
@@ -225,6 +240,36 @@ bool DrawRectangle(image_buffer_t* image, int x, int y, int width, int height,
     }
 
     const int line_width = std::min(std::max(thickness, 1), std::min(x1 - x0, y1 - y0));
+    if (image->fd < 0 && image->virt_addr != nullptr && image->format == IMAGE_FORMAT_RGBA8888) {
+        const unsigned char alpha = static_cast<unsigned char>((color >> 24) & 0xff);
+        const unsigned char red = static_cast<unsigned char>((color >> 16) & 0xff);
+        const unsigned char green = static_cast<unsigned char>((color >> 8) & 0xff);
+        const unsigned char blue = static_cast<unsigned char>(color & 0xff);
+        const int stride = image->width_stride > 0 ? image->width_stride : image->width;
+        auto fill_rect_cpu = [&](int rx, int ry, int rw, int rh) {
+            if (rw <= 0 || rh <= 0) {
+                return;
+            }
+            for (int py = ry; py < ry + rh; ++py) {
+                unsigned char* row = image->virt_addr + py * stride * 4;
+                for (int px = rx; px < rx + rw; ++px) {
+                    BlendStraightPixel(row + px * 4, red, green, blue, alpha);
+                }
+            }
+        };
+        fill_rect_cpu(x0, y0, x1 - x0, line_width);
+        fill_rect_cpu(x0, y1 - line_width, x1 - x0, line_width);
+        fill_rect_cpu(x0, y0 + line_width, line_width, y1 - y0 - line_width * 2);
+        fill_rect_cpu(x1 - line_width, y0 + line_width, line_width, y1 - y0 - line_width * 2);
+        return true;
+    }
+    if (image->fd < 0) {
+        return false;
+    }
+    const int format = ToRgaFormat(image->format);
+    if (format < 0) {
+        return false;
+    }
     const int stride = image->width_stride > 0 ? image->width_stride : image->width;
     rga_buffer_t target = wrapbuffer_fd_t(image->fd, image->width, image->height, stride,
                                            image->height_stride > 0 ? image->height_stride : image->height,
@@ -306,7 +351,33 @@ RgaOverlayRenderer::LabelSprite RgaOverlayRenderer::BuildLabelSprite(const Pipel
 }
 
 bool RgaOverlayRenderer::BlendSprite(const LabelSprite& sprite, image_buffer_t* target, int x, int y) const {
-    if (sprite.width <= 0 || sprite.height <= 0 || sprite.pixels.empty() || target == nullptr || target->fd < 0) {
+    if (sprite.width <= 0 || sprite.height <= 0 || sprite.pixels.empty() || target == nullptr) {
+        return false;
+    }
+    if (target->fd < 0 && target->virt_addr != nullptr && target->format == IMAGE_FORMAT_RGBA8888) {
+        if (x < 0 || y < 0 || x >= target->width || y >= target->height) {
+            return false;
+        }
+        const int blend_width = std::min(sprite.width, target->width - x);
+        const int blend_height = std::min(sprite.height, target->height - y);
+        if (blend_width <= 0 || blend_height <= 0) {
+            return false;
+        }
+        const int stride = target->width_stride > 0 ? target->width_stride : target->width;
+        for (int py = 0; py < blend_height; ++py) {
+            const unsigned char* src_row = sprite.pixels.data() + py * sprite.width * 4;
+            unsigned char* dst_row = target->virt_addr + (y + py) * stride * 4 + x * 4;
+            for (int px = 0; px < blend_width; ++px) {
+                const unsigned char* src = src_row + px * 4;
+                if (src[3] == 0) {
+                    continue;
+                }
+                BlendStraightPixel(dst_row + px * 4, src[0], src[1], src[2], src[3]);
+            }
+        }
+        return true;
+    }
+    if (target->fd < 0) {
         return false;
     }
     const int format = ToRgaFormat(target->format);
