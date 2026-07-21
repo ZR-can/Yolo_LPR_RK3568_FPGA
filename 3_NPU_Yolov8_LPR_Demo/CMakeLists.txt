@@ -49,7 +49,12 @@ set(DEMO_COMMON_SRCS
 set(TARGET_PICTURE yolov8_lpr_picture_demo)
 set(TARGET_VIDEO yolov8_lpr_video_demo)
 set(TARGET_PCIE yolov8_lpr_pcie_demo)
+set(TARGET_PPOCR ppocr_rec_demo)
+set(TARGET_PPOCR_EVAL ppocr_rec_eval_demo)
 set(PCIE_DRIVER_MODULE "${CMAKE_CURRENT_SOURCE_DIR}/pango_pci_driver.ko")
+set(PPOCR_MODEL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/ppocrv4_rec14_rk3568_fp16.rknn")
+set(PPOCR_DICT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/cblprd_plate_dict.txt")
+set(PPOCR_TEST_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/test_ppocr.jpg")
 
 if (NOT EXISTS "${PCIE_DRIVER_MODULE}")
     message(FATAL_ERROR "PCIe driver module is missing: ${PCIE_DRIVER_MODULE}")
@@ -58,10 +63,14 @@ endif()
 add_executable(${TARGET_PICTURE} src/main_picture.cc ${DEMO_COMMON_SRCS})
 add_executable(${TARGET_VIDEO} src/main_video.cc ${DEMO_COMMON_SRCS})
 add_executable(${TARGET_PCIE} src/main_pcie.cc src/pcie_frame_source.cc ${DEMO_COMMON_SRCS})
+add_executable(${TARGET_PPOCR} src/main_ppocr.cc src/ppocr_rec.cc)
+add_executable(${TARGET_PPOCR_EVAL} src/main_ppocr_eval.cc src/ppocr_rec.cc)
 
 # 获取通用的模型文件
 file(GLOB RKNN_FILES "${CMAKE_CURRENT_SOURCE_DIR}/model/*.rknn")
 file(GLOB TXT_FILES "${CMAKE_CURRENT_SOURCE_DIR}/model/*.txt")
+list(FILTER RKNN_FILES EXCLUDE REGEX "/ppocr[^/]*\\.rknn$")
+list(FILTER TXT_FILES EXCLUDE REGEX "/cblprd_plate_dict\\.txt$")
 foreach(TARGET_NAME ${TARGET_PICTURE} ${TARGET_VIDEO} ${TARGET_PCIE})
     target_compile_definitions(${TARGET_NAME} PRIVATE ZERO_COPY)
 
@@ -102,6 +111,7 @@ foreach(TARGET_NAME ${TARGET_PICTURE} ${TARGET_VIDEO} ${TARGET_PCIE})
     # 3. 根据 target 区分拷贝对应的测试资源
     if (${TARGET_NAME} STREQUAL ${TARGET_PICTURE})
         file(GLOB TEST_JPG_FILES "${CMAKE_CURRENT_SOURCE_DIR}/model/test*.jpg")
+        list(FILTER TEST_JPG_FILES EXCLUDE REGEX "/test_ppocr\\.jpg$")
         install(FILES ${TEST_JPG_FILES} DESTINATION ${TARGET_NAME}/test)
     elseif (${TARGET_NAME} STREQUAL ${TARGET_VIDEO})
         file(GLOB TEST_VIDEO_FILES 
@@ -114,3 +124,30 @@ foreach(TARGET_NAME ${TARGET_PICTURE} ${TARGET_VIDEO} ${TARGET_PCIE})
         install(FILES ${PCIE_DRIVER_MODULE} DESTINATION ${TARGET_NAME})
     endif()
 endforeach()
+
+foreach(PPOCR_TARGET ${TARGET_PPOCR} ${TARGET_PPOCR_EVAL})
+    target_include_directories(${PPOCR_TARGET} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/utils
+        ${LIBRKNNRT_INCLUDES}
+    )
+
+    target_link_libraries(${PPOCR_TARGET}
+        imageutils
+        fileutils
+        ${LIBRKNNRT}
+        ${OpenCV_LIBS}
+    )
+
+    if (CMAKE_SYSTEM_NAME STREQUAL "Android")
+        target_link_libraries(${PPOCR_TARGET} log)
+    endif()
+endforeach()
+
+install(TARGETS ${TARGET_PPOCR} ${TARGET_PPOCR_EVAL}
+        DESTINATION ${TARGET_PPOCR})
+install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/eval_ppocr_rknn_subsets.sh
+        DESTINATION ${TARGET_PPOCR})
+install(FILES ${PPOCR_MODEL_FILE} ${PPOCR_DICT_FILE}
+        DESTINATION ${TARGET_PPOCR}/model)
+install(FILES ${PPOCR_TEST_FILE} DESTINATION ${TARGET_PPOCR}/test)

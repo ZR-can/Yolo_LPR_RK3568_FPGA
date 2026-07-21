@@ -28,6 +28,7 @@ build/
 install/
 3_NPU_Yolov8_LPR_Demo/model/*.bat
 3_NPU_Yolov8_LPR_Demo/model/test*
+3_NPU_Yolov8_LPR_Demo/model/ppocrv4_rec*_rk3568_*.rknn
 3_NPU_Yolov8_LPR_Demo/*.log
 3_NPU_Yolov8_LPR_Demo/**/*.log
 *dataset/
@@ -35,6 +36,7 @@ install/
 *imgs/
 *videos/
 1_PC_Training/datasets/
+1_PC_Training/PaddleOCR/
 1_PC_Training/LPRNet_Pytorch/data
 1_PC_Training/scripts/runs/test_results/val/labels
 relate
@@ -43,3 +45,4 @@ rknn
 3_NPU_Yolov8_LPR_Demo/result
 yolo_-lprnet_-pytorch-master
 pcie_720p
+tmp/

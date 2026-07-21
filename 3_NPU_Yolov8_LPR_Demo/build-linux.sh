@@ -216,6 +216,24 @@ if [ -d "$INSTALL_DIR" ]; then
     if [ ! -f "$INSTALL_DIR/yolov8_lpr_pcie_demo/pango_pci_driver.ko" ]; then
         echo -e "\e[91mThe Pango PCIe driver module is missing from the install directory.\e[0m"
     fi
+    if [ ! -x "$INSTALL_DIR/ppocr_rec_demo/ppocr_rec_demo" ]; then
+        echo -e "\e[91mThe PP-OCR recognition executable is missing from the install directory.\e[0m"
+    fi
+    if [ ! -x "$INSTALL_DIR/ppocr_rec_demo/ppocr_rec_eval_demo" ]; then
+        echo -e "\e[91mThe PP-OCR dataset evaluator is missing from the install directory.\e[0m"
+    fi
+    if [ ! -x "$INSTALL_DIR/ppocr_rec_demo/eval_ppocr_rknn_subsets.sh" ]; then
+        echo -e "\e[91mThe PP-OCR subset evaluation script is missing from the install directory.\e[0m"
+    fi
+    if [ ! -f "$INSTALL_DIR/ppocr_rec_demo/model/ppocrv4_rec14_rk3568_fp16.rknn" ]; then
+        echo -e "\e[91mThe PP-OCR FP16 model is missing from the install directory.\e[0m"
+    fi
+    if [ ! -f "$INSTALL_DIR/ppocr_rec_demo/model/cblprd_plate_dict.txt" ]; then
+        echo -e "\e[91mThe PP-OCR character dictionary is missing from the install directory.\e[0m"
+    fi
+    if [ ! -f "$INSTALL_DIR/ppocr_rec_demo/test/test_ppocr.jpg" ]; then
+        echo -e "\e[91mThe PP-OCR test image is missing from the install directory.\e[0m"
+    fi
 else
     echo -e "\e[91mInstall directory \"$INSTALL_DIR\" does not exist, please check!\e[0m"
 fi
