@@ -47,3 +47,4 @@ yolo_-lprnet_-pytorch-master
 pcie_720p
 *_accuracy_analysis/
 2_Model_Conversion_PC_Simulation/PPOCR/model/quant_images
+1_PC_Training/PaddleOCR/
