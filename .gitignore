@@ -45,3 +45,5 @@ rknn
 3_NPU_Yolov8_LPR_Demo/result
 yolo_-lprnet_-pytorch-master
 pcie_720p
+*_accuracy_analysis/
+2_Model_Conversion_PC_Simulation/PPOCR/model/quant_images
