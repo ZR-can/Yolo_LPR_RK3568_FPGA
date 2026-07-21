@@ -28,7 +28,6 @@ build/
 install/
 3_NPU_Yolov8_LPR_Demo/model/*.bat
 3_NPU_Yolov8_LPR_Demo/model/test*
-3_NPU_Yolov8_LPR_Demo/model/ppocrv4_rec*_rk3568_*.rknn
 3_NPU_Yolov8_LPR_Demo/*.log
 3_NPU_Yolov8_LPR_Demo/**/*.log
 *dataset/
@@ -42,7 +41,8 @@ install/
 relate
 rknn
 2_Model_Conversion_PC_Simulation/ultralytics_yolov8
+2_Model_Conversion_PC_Simulation/PPOCR/model/quant_images
 3_NPU_Yolov8_LPR_Demo/result
 yolo_-lprnet_-pytorch-master
 pcie_720p
-tmp/
+*_accuracy_analysis/
