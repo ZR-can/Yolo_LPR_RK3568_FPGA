@@ -4,6 +4,7 @@ project(yolov8_lpr_demo)
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+option(ENABLE_QT_UI "Build the Qt PCIe LPR UI target" OFF)
 
 if (ENABLE_ASAN)
     message(STATUS "BUILD WITH ADDRESS SANITIZER")
@@ -55,6 +56,7 @@ set(PCIE_DRIVER_MODULE "${CMAKE_CURRENT_SOURCE_DIR}/pango_pci_driver.ko")
 set(PPOCR_MODEL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/ppocrv4_rec14_rk3568_fp16.rknn")
 set(PPOCR_DICT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/cblprd_plate_dict.txt")
 set(PPOCR_TEST_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/test_ppocr.jpg")
+set(CHINESE_FONT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/simhei.ttf")
 
 if (NOT EXISTS "${PCIE_DRIVER_MODULE}")
     message(FATAL_ERROR "PCIe driver module is missing: ${PCIE_DRIVER_MODULE}")
@@ -151,3 +153,52 @@ install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/eval_ppocr_rknn_subsets.sh
 install(FILES ${PPOCR_MODEL_FILE} ${PPOCR_DICT_FILE}
         DESTINATION ${TARGET_PPOCR}/model)
 install(FILES ${PPOCR_TEST_FILE} DESTINATION ${TARGET_PPOCR}/test)
+
+if (ENABLE_QT_UI)
+    set(CMAKE_AUTOMOC ON)
+    set(CMAKE_AUTOUIC ON)
+    set(CMAKE_AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+    find_package(Qt5 REQUIRED COMPONENTS Widgets)
+
+    set(TARGET_PCIE_QT yolov8_lpr_pcie_qt_ui)
+    add_executable(${TARGET_PCIE_QT}
+        src/main_pcie.cc
+        src/main_pcie_qt.cc
+        src/pcie_qt_ui_helpers.cc
+        src/pcie_qt_ui_helpers.h
+        src/mainwindow.ui
+        src/pcie_frame_source.cc
+        ${DEMO_COMMON_SRCS}
+    )
+
+    target_compile_definitions(${TARGET_PCIE_QT} PRIVATE ZERO_COPY PCIE_QT_UI_BUILD)
+
+    target_include_directories(${TARGET_PCIE_QT} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/utils
+        ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/allocator/drm
+        ${LIBRKNNRT_INCLUDES}
+    )
+
+    target_link_libraries(${TARGET_PCIE_QT}
+        Qt5::Widgets
+        imageutils
+        fileutils
+        imagedrawing
+        ${LIBRKNNRT}
+        ${OpenCV_LIBS}
+        m
+        dl
+        Threads::Threads
+    )
+
+    install(TARGETS ${TARGET_PCIE_QT} DESTINATION ${TARGET_PCIE_QT})
+    install(FILES ${RKNN_FILES} DESTINATION ${TARGET_PCIE_QT}/model)
+    install(FILES ${TXT_FILES} DESTINATION ${TARGET_PCIE_QT}/model)
+    if (EXISTS "${CHINESE_FONT_FILE}")
+        install(FILES ${CHINESE_FONT_FILE} DESTINATION ${TARGET_PCIE_QT}/model)
+    endif()
+    install(FILES ${PCIE_DRIVER_MODULE} DESTINATION ${TARGET_PCIE_QT})
+endif()

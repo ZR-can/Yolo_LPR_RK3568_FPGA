@@ -3,7 +3,7 @@
 set -e
 
 echo "$0 $@"
-while getopts ":t:a:d:b:m:r" opt; do
+while getopts ":t:a:d:b:mrq" opt; do
   case $opt in
     t)
       TARGET_SOC=$OPTARG
@@ -24,6 +24,9 @@ while getopts ":t:a:d:b:m:r" opt; do
     r)
       DISABLE_RGA=ON
       ;;
+    q)
+      ENABLE_QT_UI=ON
+      ;;
     :)
       echo "Option -$OPTARG requires an argument." 
       exit 1
@@ -43,6 +46,7 @@ if [ -z ${TARGET_SOC} ] || [ -z ${BUILD_DEMO_NAME} ]; then
   echo "    -b : build_type(Debug/Release)"
   echo "    -m : enable address sanitizer, build_type need set to Debug"
   echo "    -r : disable rga, use cpu resize image"
+  echo "    -q : build Qt PCIe UI demo together with the original demos"
   echo "such as: $0 -t rk3588 -a aarch64 -d mobilenet"
   echo "Note: 'rk356x' represents rk3562/rk3566/rk3568, 'rv1106' represents rv1103/rv1106, 'rv1126' represents rv1109/rv1126"
   echo "Note: 'disable rga option is invalid for rv1103/rv1103b/rv1106"
@@ -86,6 +90,21 @@ fi
 
 if [[ -z ${DISABLE_RGA} ]];then
     DISABLE_RGA=OFF
+fi
+
+if [[ -z ${ENABLE_QT_UI} ]];then
+    ENABLE_QT_UI=OFF
+fi
+
+if [[ ${ENABLE_QT_UI} = "ON" ]]; then
+    if [[ -z ${QT_ARM64_PREFIX} ]]; then
+        QT_ARM64_PREFIX=/home/gyn/Qt-5.12.9-arm64
+    fi
+    if [ ! -x "${QT_ARM64_PREFIX}/bin/qmake" ]; then
+        echo "Qt ARM64 qmake is missing: ${QT_ARM64_PREFIX}/bin/qmake"
+        echo "Set QT_ARM64_PREFIX to the Qt 5.12.9 ARM64 install path, or run without -q."
+        exit 1
+    fi
 fi
 
 # 提前获取脚本所在的绝对路径作为 ROOT_PWD
@@ -169,29 +188,45 @@ echo "TARGET_ARCH=${TARGET_ARCH}"
 echo "BUILD_TYPE=${BUILD_TYPE}"
 echo "ENABLE_ASAN=${ENABLE_ASAN}"
 echo "DISABLE_RGA=${DISABLE_RGA}"
+echo "ENABLE_QT_UI=${ENABLE_QT_UI}"
+if [[ ${ENABLE_QT_UI} = "ON" ]]; then
+echo "QT_ARM64_PREFIX=${QT_ARM64_PREFIX}"
+fi
 echo "INSTALL_DIR=${INSTALL_DIR}"
 echo "BUILD_DIR=${BUILD_DIR}"
 echo "CC=${CC}"
 echo "CXX=${CXX}"
 echo "==================================="
 
-if [[ ! -d "${BUILD_DIR}" ]]; then
-  mkdir -p ${BUILD_DIR}
-fi
-
 if [[ -d "${INSTALL_DIR}" ]]; then
   rm -rf ${INSTALL_DIR}
 fi
+if [[ -d "${BUILD_DIR}" ]]; then
+  rm -rf ${BUILD_DIR}
+fi
+mkdir -p ${BUILD_DIR}
 
 cd ${BUILD_DIR}
+CMAKE_EXTRA_ARGS=()
+if [[ ${ENABLE_QT_UI} = "ON" ]]; then
+    CMAKE_EXTRA_ARGS+=(
+        -DCMAKE_PREFIX_PATH="${QT_ARM64_PREFIX}"
+        -DQt5_DIR="${QT_ARM64_PREFIX}/lib/cmake/Qt5"
+    )
+fi
+
 cmake ../../${BUILD_DEMO_PATH} \
     -DTARGET_SOC=${TARGET_SOC} \
     -DCMAKE_SYSTEM_NAME=Linux \
     -DCMAKE_SYSTEM_PROCESSOR=${TARGET_ARCH} \
+    -DCMAKE_C_COMPILER=${CC} \
+    -DCMAKE_CXX_COMPILER=${CXX} \
     -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
     -DENABLE_ASAN=${ENABLE_ASAN} \
     -DDISABLE_RGA=${DISABLE_RGA} \
-    -DCMAKE_INSTALL_PREFIX=${INSTALL_DIR}
+    -DENABLE_QT_UI=${ENABLE_QT_UI} \
+    -DCMAKE_INSTALL_PREFIX=${INSTALL_DIR} \
+    "${CMAKE_EXTRA_ARGS[@]}"
 make -j4
 make install
 
@@ -233,6 +268,14 @@ if [ -d "$INSTALL_DIR" ]; then
     fi
     if [ ! -f "$INSTALL_DIR/ppocr_rec_demo/test/test_ppocr.jpg" ]; then
         echo -e "\e[91mThe PP-OCR test image is missing from the install directory.\e[0m"
+    fi
+    if [[ ${ENABLE_QT_UI} = "ON" ]]; then
+        if [ ! -x "$INSTALL_DIR/yolov8_lpr_pcie_qt_ui/yolov8_lpr_pcie_qt_ui" ]; then
+            echo -e "\e[91mThe Qt PCIe UI executable is missing from the install directory.\e[0m"
+        fi
+        if [ ! -f "$INSTALL_DIR/yolov8_lpr_pcie_qt_ui/model/simhei.ttf" ]; then
+            echo -e "\e[91mThe Qt Chinese font is missing from the install directory.\e[0m"
+        fi
     fi
 else
     echo -e "\e[91mInstall directory \"$INSTALL_DIR\" does not exist, please check!\e[0m"

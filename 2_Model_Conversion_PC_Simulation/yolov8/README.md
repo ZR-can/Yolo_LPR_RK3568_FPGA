@@ -79,6 +79,65 @@ python convert.py ../model/yolov8n.onnx rk3588
 - `<dtype>(optional)`: Specify as `i8`, `u8` or `fp`. `i8`/`u8` for doing quantization, `fp` for no quantization. Default is `i8`.
 - `<output_rknn_path>(optional)`: Specify save path for the RKNN model, default save in the same directory as ONNX model with name `yolov8.rknn`
 
+### 4.1 RK3568 traffic INT8 quantization dataset
+
+Windows 下从 `ITS/videoready` 的视频均匀抽帧：
+
+```powershell
+cd D:\Yolo_LPR_RK3568_FPGA_Project
+powershell -ExecutionPolicy Bypass -File `
+  .\2_Model_Conversion_PC_Simulation\yolov8\python\prepare_traffic_quant_dataset.ps1
+```
+
+默认处理 8 个视频，每个视频均匀抽取 25 帧，并按 YOLO letterbox 方式缩放/填充为
+`640x640`。输出：
+
+```text
+model/traffic_quant_dataset/*.jpg
+model/traffic_dataset.txt
+```
+
+重复执行脚本会重建专用的 `traffic_quant_dataset` 目录，不会覆盖原有的
+`rknn_quant_dataset` 和 `dataset.txt`。可调整参数：
+
+```powershell
+.\python\prepare_traffic_quant_dataset.ps1 -FramesPerVideo 25 -ImageSize 640
+```
+
+转换八类交通 ONNX 前，需要把 `python/convert.py` 第 4 行改为：
+
+```python
+DATASET_PATH = '../model/traffic_dataset.txt'
+```
+
+若希望不传输出路径时也使用交通模型名称，可把第 5 行同步改为：
+
+```python
+DEFAULT_RKNN_PATH = '../model/yolov8_traffic_i8.rknn'
+```
+
+`DEFAULT_QUANT = True` 和 `mean_values/std_values` 不需要修改。Ubuntu x86_64 的
+RKNN Toolkit2 环境中执行：
+
+```bash
+cd /path/to/Yolo_LPR_RK3568_FPGA_Project/2_Model_Conversion_PC_Simulation/yolov8/python
+python3 convert.py ../model/yolov8_traffic.onnx rk3568 i8 ../model/yolov8_traffic_i8.rknn
+```
+
+输出文件为：
+
+```text
+model/yolov8_traffic_i8.rknn
+```
+
+2026-07-22 已完成该 INT8 RKNN 导出，并将同一模型复制到
+`../../4_NPU_Yolov8_Traffic_Demo/model/yolov8_traffic_i8.rknn`，供 RK3568 最小图片检测与
+性能测试使用。两份文件的 SHA256 均为
+`FCC7F014246352EC9E4A69EA577F454251F73CFC8393E4C2B856E5BFB58F7A98`。
+
+若先验证非量化模型，把命令中的 `i8` 改成 `fp`，并将输出名改成
+`yolov8_traffic_fp.rknn`。FP 模式不会使用量化数据集。
+
 
 
 ## 5. Python Demo

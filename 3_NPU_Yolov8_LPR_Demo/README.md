@@ -333,3 +333,155 @@ echo '--- [内存占用 (MB)] ---'
 free -m
 "
 ```
+## PCIe Qt FPS test record - 2026-07-20
+
+Workspace:
+
+`D:\a_fpga\codex\5_12_HDMI_IN_DDR3_HDMI_OUT\else\Yolo_LPR_RK3568_FPGA\3_NPU_Yolov8_LPR_Demo`
+
+Test target:
+
+- `src/main_pcie.cc`: PCIe capture / display pipeline / inference statistics.
+- `src/main_pcie_qt.cc`: Qt UI painted FPS statistics.
+
+Terminal result:
+
+```text
+========== PCIe Pipeline Statistics ==========
+Captured: 4422 (28.00 fps), pool drops: 0
+Display pipeline: 3916 (24.80 fps)
+Display presented/handoff: 3916 (24.80 fps), queue drops: 0, display failures: 0, overlay failures: 0
+Inference: 2210 (14.00 fps), queue drops: 1, failures: 0, plate results: 0
+Average inference pipeline: 47.73 ms
+Average display convert/overlay: 7.02 / 0.01 ms
+Average display present/end-to-end: 0.00 / 8.12 ms
+Driver retries: zero=0 EPERM=7519 interrupted/EAGAIN=0, fatal errors=0
+==============================================
+Qt UI painted: 3916 (24.78 fps)
+```
+
+Random UI screenshot values:
+
+```text
+PCIe capture: 29.1 FPS
+Screen display: 25.2 FPS
+Model inference: 15.5 FPS
+End-to-end latency: 8.2 ms
+```
+
+Interpretation:
+
+- `Captured` counts successful `PcieFrameSource::ReadFrame()` results. It is
+  the PCIe/user-space frame input rate.
+- `Display pipeline` counts frames that completed display-side conversion and
+  overlay. It is the backend display-processing throughput before UI painting.
+- `Display presented/handoff` counts frames accepted by the display backend. In
+  DRM mode this means commit success; in Qt mode this means handoff to Qt.
+- `Qt UI painted` counts frames after Qt main thread completes
+  `QLabel::setPixmap()`. This is the real Qt UI painted-frame rate.
+- `Inference` counts successful `process_pipeline()` jobs. With the current
+  `kInferenceInterval = 2`, the expected inference FPS is about half of
+  captured FPS.
+
+Conclusion for this test:
+
+- Capture average is about 28 FPS.
+- Qt UI painted average is about 24.78 FPS, matching display handoff almost
+  exactly, so Qt painting itself is not the main loss point in this run.
+- Inference average is exactly about half of capture FPS, matching the current
+  every-2nd-frame inference policy.
+- Display loss is `4422 - 3916 = 506` frames over the run. This is between PCIe
+  capture and display pipeline/handoff, not between Qt handoff and Qt painting.
+
+## PCIe Qt UI handoff notes - 2026-07-21
+
+Important source files:
+
+- `src/main_pcie.cc`: shared PCIe capture, display conversion/overlay, NPU
+  inference, and terminal FPS statistics. It still builds the original
+  command-line PCIe demo when `PCIE_QT_UI_BUILD` is not defined.
+- `src/main_pcie_qt.cc`: Qt frontend. It calls `RunPcieDemo()` through
+  `PcieUiCallbacks`, paints frames on the Qt main thread, and prints
+  `Qt UI painted` when the window exits.
+- `src/pcie_demo_bridge.h`: bridge structs between the shared PCIe backend and
+  the Qt frontend.
+- `src/mainwindow.ui` and `src/pcie_qt_ui_helpers.*`: Qt layout and styling.
+
+Build the Qt UI target in the Ubuntu/aarch64 cross-build environment:
+
+```shell
+cd /mnt/hgfs/Yolo_LPR_RK3568_FPGA_Project/3_NPU_Yolov8_LPR_Demo
+export GCC_COMPILER=/usr/bin/aarch64-linux-gnu
+export QT_ARM64_PREFIX=/home/gyn/Qt-5.12.9-arm64
+./build-linux.sh -t rk3568 -a aarch64 -d yolov8_lpr -q
+```
+
+The install output is:
+
+```text
+install/rk356x_linux_aarch64/rknn_yolov8_lpr_demo/yolov8_lpr_pcie_qt_ui/
+```
+
+Run on RK3568 after pushing the install directory:
+
+```shell
+cd /userdata/yolov8_lpr_pcie_qt_ui/yolov8_lpr_pcie_qt_ui
+export DISPLAY=:0
+export XAUTHORITY=/var/run/lightdm/root/:0
+export QT_QPA_PLATFORM=xcb
+./yolov8_lpr_pcie_qt_ui ./model/yolov8.rknn ./model/lprnet7repair_i8.rknn ./model/lprnet8repair_i8.rknn
+```
+
+Current UI smoothness changes to preserve:
+
+- The Qt UI receives already-converted RGBA frames from the shared PCIe backend;
+  the old standalone `pcie_qt_window.*` path was removed.
+- `QImage::copy()` was removed from the hot path. The queued Qt frame owns a
+  shared pixel buffer until `QLabel::setPixmap()` finishes.
+- Qt scaling uses `Qt::FastTransformation` to reduce CPU cost on RK3568.
+- Status updates are throttled to about 250 ms and `OnFrameReady()` only paints
+  the video frame, avoiding per-frame table/status widget churn.
+- Qt back-pressure allows at most two pending UI frame events
+  (`kMaxPendingUiFrames = 2`). If Qt is behind, `main_pcie.cc` drops before
+  expensive conversion/overlay work.
+- `src/pcie_frame_source.cc` opens the driver with `O_NONBLOCK`, so exit and
+  pause paths do not depend on an indefinitely blocking driver read.
+
+Saved image flow:
+
+- The Qt UI has a `保存图片` button. It is enabled after the first painted frame.
+- The saved file is the latest full-resolution RGBA frame after backend
+  conversion and recognition overlay, not the scaled QLabel preview.
+- Images are written as PNG files under:
+
+```text
+/userdata/yolov8_lpr_pcie_qt_ui/yolov8_lpr_pcie_qt_ui/saved_images/
+```
+
+Pull saved images from the upper computer with ADB:
+
+```powershell
+D:\adb\bin\adb.exe pull /userdata/yolov8_lpr_pcie_qt_ui/yolov8_lpr_pcie_qt_ui/saved_images .\saved_images
+```
+
+The board-side Qt process normally cannot `adb push` to the upper computer by
+itself, because ADB is initiated from the upper computer. For automatic transfer
+without manual `adb pull`, add a small TCP/HTTP receiver on the upper computer
+or use SSH/SCP if the board image has network and credentials configured.
+
+FPS metric meanings:
+
+- `Captured`: successful `PcieFrameSource::ReadFrame()` frames from PCIe into
+  userspace.
+- `Display pipeline`: frames that completed display conversion and overlay.
+- `Display presented/handoff`: DRM mode means successful display commit; Qt mode
+  means the backend handed the frame to Qt.
+- `Qt UI painted`: frames after the Qt main thread completed
+  `QLabel::setPixmap()`. This is the best number for visible UI smoothness.
+- `Inference`: successful `process_pipeline()` jobs. With
+  `kInferenceInterval = 2`, this is expected to be about half of capture FPS.
+
+If `Display presented/handoff` is close to `Qt UI painted`, Qt painting is not
+the main bottleneck. If capture is much higher than display pipeline, focus on
+conversion/overlay/back-pressure. If inference is low while display is smooth,
+focus on RKNN/NPU/postprocess.

@@ -22,28 +22,10 @@
 #include <sys/time.h>
 #include <set>
 #include <vector>
-#define LABEL_NALE_TXT_PATH "./model/labels_list.txt"
 
 static char *labels[OBJ_CLASS_NUM];
 
 inline static int clamp(float val, int min, int max) { return val > min ? (val < max ? val : max) : min; }
-
-static bool is_enabled_class_id(int cls_id)
-{
-#if defined(ITS_TRAFFIC_CLASS_ONLY)
-    return cls_id == 0 ||   // person
-           cls_id == 1 ||   // bicycle
-           cls_id == 2 ||   // car
-           cls_id == 3 ||   // motorcycle
-           cls_id == 5 ||   // bus
-           cls_id == 7 ||   // truck
-           cls_id == 9 ||   // traffic light
-           cls_id == 11;    // stop sign
-#else
-    (void)cls_id;
-    return true;
-#endif
-}
 
 static char *readLine(FILE *fp, char *buffer, int *len)
 {
@@ -85,7 +67,7 @@ static char *readLine(FILE *fp, char *buffer, int *len)
 static int readLines(const char *fileName, char *lines[], int max_line)
 {
     FILE *file = fopen(fileName, "r");
-    char *s;
+    char *s = nullptr;
     int i = 0;
     int n = 0;
 
@@ -107,9 +89,14 @@ static int readLines(const char *fileName, char *lines[], int max_line)
 
 static int loadLabelName(const char *locationFilename, char *label[])
 {
-    printf("load lable %s\n", locationFilename);
-    readLines(locationFilename, label, OBJ_CLASS_NUM);
-    return 0;
+    printf("load labels: %s\n", locationFilename);
+    int count = readLines(locationFilename, label, OBJ_CLASS_NUM);
+    if (count != OBJ_CLASS_NUM)
+    {
+        printf("Expected %d labels, but loaded %d\n", OBJ_CLASS_NUM, count);
+        return -1;
+    }
+    return count;
 }
 
 static float CalculateOverlap(float xmin0, float ymin0, float xmax0, float ymax0, float xmin1, float ymin1, float xmax1,
@@ -197,6 +184,12 @@ static float sigmoid(float x) { return 1.0 / (1.0 + expf(-x)); }
 
 static float unsigmoid(float y) { return -1.0 * logf((1.0 / y) - 1.0); }
 
+static bool is_enabled_class(int class_id, bool person_light_only)
+{
+    return !person_light_only || class_id == TRAFFIC_PERSON_CLASS_ID ||
+           class_id == TRAFFIC_LIGHT_CLASS_ID;
+}
+
 inline static int32_t __clip(float val, float min, float max)
 {
     float f = val <= min ? min : (val >= max ? max : val);
@@ -244,6 +237,7 @@ static int process_i8(int8_t *box_tensor, int32_t box_zp, float box_scale,
                       std::vector<float> &boxes, 
                       std::vector<float> &objProbs, 
                       std::vector<int> &classId, 
+                      bool person_light_only,
                       float threshold)
 {
     int validCount = 0;
@@ -267,7 +261,9 @@ static int process_i8(int8_t *box_tensor, int32_t box_zp, float box_scale,
 
             int8_t max_score = -score_zp;
             for (int c= 0; c< OBJ_CLASS_NUM; c++){
-                if (is_enabled_class_id(c) && (score_tensor[offset] > score_thres_i8) && (score_tensor[offset] > max_score))
+                if (is_enabled_class(c, person_light_only) &&
+                    (score_tensor[offset] > score_thres_i8) &&
+                    (score_tensor[offset] > max_score))
                 {
                     max_score = score_tensor[offset];
                     max_class_id = c;
@@ -314,6 +310,7 @@ static int process_u8(uint8_t *box_tensor, int32_t box_zp, float box_scale,
                       std::vector<float> &boxes,
                       std::vector<float> &objProbs,
                       std::vector<int> &classId,
+                      bool person_light_only,
                       float threshold)
 {
     int validCount = 0;
@@ -340,7 +337,9 @@ static int process_u8(uint8_t *box_tensor, int32_t box_zp, float box_scale,
             uint8_t max_score = -score_zp;
             for (int c = 0; c < OBJ_CLASS_NUM; c++)
             {
-                if (is_enabled_class_id(c) && (score_tensor[offset] > score_thres_u8) && (score_tensor[offset] > max_score))
+                if (is_enabled_class(c, person_light_only) &&
+                    (score_tensor[offset] > score_thres_u8) &&
+                    (score_tensor[offset] > max_score))
                 {
                     max_score = score_tensor[offset];
                     max_class_id = c;
@@ -389,6 +388,7 @@ static int process_fp32(float *box_tensor, float *score_tensor, float *score_sum
                         std::vector<float> &boxes, 
                         std::vector<float> &objProbs, 
                         std::vector<int> &classId, 
+                        bool person_light_only,
                         float threshold)
 {
     int validCount = 0;
@@ -409,7 +409,9 @@ static int process_fp32(float *box_tensor, float *score_tensor, float *score_sum
 
             float max_score = 0;
             for (int c= 0; c< OBJ_CLASS_NUM; c++){
-                if (is_enabled_class_id(c) && (score_tensor[offset] > threshold) && (score_tensor[offset] > max_score))
+                if (is_enabled_class(c, person_light_only) &&
+                    (score_tensor[offset] > threshold) &&
+                    (score_tensor[offset] > max_score))
                 {
                     max_score = score_tensor[offset];
                     max_class_id = c;
@@ -458,6 +460,7 @@ static int process_i8_rv1106(int8_t *box_tensor, int32_t box_zp, float box_scale
                              std::vector<float> &boxes,
                              std::vector<float> &objProbs,
                              std::vector<int> &classId,
+                             bool person_light_only,
                              float threshold) {
     int validCount = 0;
     int grid_len = grid_h * grid_w;
@@ -480,8 +483,10 @@ static int process_i8_rv1106(int8_t *box_tensor, int32_t box_zp, float box_scale
             int8_t max_score = -score_zp;
             offset = offset * OBJ_CLASS_NUM;
             for (int c = 0; c < OBJ_CLASS_NUM; c++) {
-                if (is_enabled_class_id(c) && (score_tensor[offset + c] > score_thres_i8) && (score_tensor[offset + c] > max_score)) {
-                    max_score = score_tensor[offset + c]; //80类 [1, 80, 80, 80] 3588NCHW 1106NHWC
+                if (is_enabled_class(c, person_light_only) &&
+                    (score_tensor[offset + c] > score_thres_i8) &&
+                    (score_tensor[offset + c] > max_score)) {
+                    max_score = score_tensor[offset + c]; // 8 traffic classes
                     max_class_id = c;
                 }
             }
@@ -568,7 +573,8 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
             validCount += process_i8_rv1106((int8_t *)_outputs[box_idx]->virt_addr, app_ctx->output_attrs[box_idx].zp, app_ctx->output_attrs[box_idx].scale,
                                 (int8_t *)_outputs[score_idx]->virt_addr, app_ctx->output_attrs[score_idx].zp,
                                 app_ctx->output_attrs[score_idx].scale, (int8_t *)score_sum, score_sum_zp, score_sum_scale,
-                                grid_h, grid_w, stride, dfl_len, filterBoxes, objProbs, classId, conf_threshold);
+                                grid_h, grid_w, stride, dfl_len, filterBoxes, objProbs, classId,
+                                app_ctx->person_light_only, conf_threshold);
         }
         else
         {
@@ -604,13 +610,15 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
                                      (uint8_t *)_outputs[score_idx].buf, app_ctx->output_attrs[score_idx].zp, app_ctx->output_attrs[score_idx].scale,
                                      (uint8_t *)score_sum, score_sum_zp, score_sum_scale,
                                      grid_h, grid_w, stride, dfl_len,
-                                     filterBoxes, objProbs, classId, conf_threshold);
+                                     filterBoxes, objProbs, classId,
+                                     app_ctx->person_light_only, conf_threshold);
 #else
             validCount += process_i8((int8_t *)_outputs[box_idx].buf, app_ctx->output_attrs[box_idx].zp, app_ctx->output_attrs[box_idx].scale,
                                      (int8_t *)_outputs[score_idx].buf, app_ctx->output_attrs[score_idx].zp, app_ctx->output_attrs[score_idx].scale,
                                      (int8_t *)score_sum, score_sum_zp, score_sum_scale,
                                      grid_h, grid_w, stride, dfl_len, 
-                                     filterBoxes, objProbs, classId, conf_threshold);
+                                     filterBoxes, objProbs, classId,
+                                     app_ctx->person_light_only, conf_threshold);
 
                                      
 #endif
@@ -619,7 +627,8 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
         {
             validCount += process_fp32((float *)_outputs[box_idx].buf, (float *)_outputs[score_idx].buf, (float *)score_sum,
                                        grid_h, grid_w, stride, dfl_len, 
-                                       filterBoxes, objProbs, classId, conf_threshold);
+                                       filterBoxes, objProbs, classId,
+                                       app_ctx->person_light_only, conf_threshold);
         }
 #endif
     }
@@ -645,22 +654,20 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
 
     int last_count = 0;
     od_results->count = 0;
-
-    /* box valid detect target */
-    for (int i = 0; i < validCount; ++i)
-    {
-        if (indexArray[i] == -1 || last_count >= OBJ_NUMB_MAX_SIZE)
+    auto append_result = [&](int sorted_index) {
+        if (indexArray[sorted_index] == -1 || last_count >= OBJ_NUMB_MAX_SIZE)
         {
-            continue;
+            return;
         }
-        int n = indexArray[i];
-
+        int n = indexArray[sorted_index];
         float x1 = filterBoxes[n * 4 + 0] - letter_box->x_pad;
         float y1 = filterBoxes[n * 4 + 1] - letter_box->y_pad;
         float x2 = x1 + filterBoxes[n * 4 + 2];
         float y2 = y1 + filterBoxes[n * 4 + 3];
         int id = classId[n];
-        float obj_conf = objProbs[i];
+        // quick_sort_indice_inverse sorts probabilities in-place while retaining
+        // original box/class indices in indexArray.
+        float obj_conf = objProbs[sorted_index];
 
         od_results->results[last_count].box.left = (int)(clamp(x1, 0, model_in_w) / letter_box->scale);
         od_results->results[last_count].box.top = (int)(clamp(y1, 0, model_in_h) / letter_box->scale);
@@ -669,27 +676,61 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
         od_results->results[last_count].prop = obj_conf;
         od_results->results[last_count].cls_id = id;
         last_count++;
+    };
+
+    if (app_ctx->person_light_only)
+    {
+        // Keep traffic-light boxes ahead of crowded person results so a small,
+        // valid light cannot be displaced by the global result capacity.
+        for (int i = 0; i < validCount && last_count < OBJ_NUMB_MAX_SIZE; ++i)
+        {
+            int n = indexArray[i];
+            if (n != -1 && classId[n] == TRAFFIC_LIGHT_CLASS_ID)
+            {
+                append_result(i);
+            }
+        }
+        for (int i = 0; i < validCount && last_count < OBJ_NUMB_MAX_SIZE; ++i)
+        {
+            int n = indexArray[i];
+            if (n != -1 && classId[n] == TRAFFIC_PERSON_CLASS_ID)
+            {
+                append_result(i);
+            }
+        }
+    }
+    else
+    {
+        /* Keep the original eight-class globally sorted output for benchmark mode. */
+        for (int i = 0; i < validCount && last_count < OBJ_NUMB_MAX_SIZE; ++i)
+        {
+            append_result(i);
+        }
     }
     od_results->count = last_count;
     return 0;
 }
 
-int init_post_process()
+int init_post_process(const char *label_path)
 {
-    int ret = 0;
-    ret = loadLabelName(LABEL_NALE_TXT_PATH, labels);
+    if (label_path == nullptr)
+    {
+        return -1;
+    }
+
+    int ret = loadLabelName(label_path, labels);
     if (ret < 0)
     {
-        printf("Load %s failed!\n", LABEL_NALE_TXT_PATH);
+        printf("Load %s failed!\n", label_path);
+        deinit_post_process();
         return -1;
     }
     return 0;
 }
 
-const char *coco_cls_to_name(int cls_id)
+const char *traffic_cls_to_name(int cls_id)
 {
-
-    if (cls_id >= OBJ_CLASS_NUM)
+    if (cls_id < 0 || cls_id >= OBJ_CLASS_NUM)
     {
         return "null";
     }
