@@ -430,6 +430,28 @@ Current UI smoothness changes to preserve:
 - `src/pcie_frame_source.cc` opens the driver with `O_NONBLOCK`, so exit and
   pause paths do not depend on an indefinitely blocking driver read.
 
+Saved image flow:
+
+- The Qt UI has a `保存图片` button. It is enabled after the first painted frame.
+- The saved file is the latest full-resolution RGBA frame after backend
+  conversion and recognition overlay, not the scaled QLabel preview.
+- Images are written as PNG files under:
+
+```text
+/userdata/yolov8_lpr_pcie_qt_ui/yolov8_lpr_pcie_qt_ui/saved_images/
+```
+
+Pull saved images from the upper computer with ADB:
+
+```powershell
+D:\adb\bin\adb.exe pull /userdata/yolov8_lpr_pcie_qt_ui/yolov8_lpr_pcie_qt_ui/saved_images .\saved_images
+```
+
+The board-side Qt process normally cannot `adb push` to the upper computer by
+itself, because ADB is initiated from the upper computer. For automatic transfer
+without manual `adb pull`, add a small TCP/HTTP receiver on the upper computer
+or use SSH/SCP if the board image has network and credentials configured.
+
 FPS metric meanings:
 
 - `Captured`: successful `PcieFrameSource::ReadFrame()` frames from PCIe into

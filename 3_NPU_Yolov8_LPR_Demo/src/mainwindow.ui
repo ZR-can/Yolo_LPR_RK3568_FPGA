@@ -262,6 +262,19 @@
          </property>
         </widget>
        </item>
+       <item>
+        <widget class="QPushButton" name="saveButton">
+         <property name="minimumSize">
+          <size><width>0</width><height>40</height></size>
+         </property>
+         <property name="text">
+          <string>保存图片</string>
+         </property>
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+        </widget>
+       </item>
       </layout>
      </widget>
     </item>

@@ -7,6 +7,8 @@
 #include <QAbstractItemView>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QDateTime>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QHeaderView>
 #include <QImage>
@@ -151,6 +153,10 @@ public:
           pcie_fps_(0.0),
           display_fps_(0.0),
           inference_fps_(0.0),
+          latest_frame_width_(0),
+          latest_frame_height_(0),
+          latest_frame_stride_(0),
+          latest_frame_id_(-1),
           ui_painted_frames_(0),
           last_fps_elapsed_ms_(0),
           last_fps_captured_frames_(0),
@@ -170,9 +176,12 @@ public:
         ConfigureResultTable();
         pcie_qt_ui::ApplyTrafficStyle(this);
         connect(ui_.startButton, &QPushButton::clicked, this, &MainWindow::ToggleCapture);
+        connect(ui_.saveButton, &QPushButton::clicked, this, &MainWindow::SaveCurrentImage);
         connect(ui_.modeComboBox, &QComboBox::currentTextChanged,
                 this, &MainWindow::OnModeChanged);
         ui_.startButton->setText(pcie_qt_ui::Zh("开始"));
+        ui_.saveButton->setText(pcie_qt_ui::Zh("保存图片"));
+        ui_.saveButton->setEnabled(false);
         ApplyStatus(PcieUiStatus());
     }
 
@@ -237,6 +246,12 @@ private slots:
         const QPixmap pixmap = QPixmap::fromImage(image).scaled(
             target_size, Qt::KeepAspectRatio, Qt::FastTransformation);
         ui_.videoLabel->setPixmap(pixmap);
+        latest_frame_pixels_ = frame.pixels;
+        latest_frame_width_ = frame.width;
+        latest_frame_height_ = frame.height;
+        latest_frame_stride_ = frame.stride;
+        latest_frame_id_ = frame.frame_id;
+        ui_.saveButton->setEnabled(true);
         ++ui_painted_frames_;
         if (worker_ != nullptr) {
             worker_->MarkFrameEventConsumed();
@@ -248,6 +263,8 @@ private slots:
         ui_.stateValueLabel->setText(pcie_qt_ui::Zh("空闲"));
         ui_.videoLabel->clear();
         ui_.videoLabel->setText(pcie_qt_ui::Zh("等待图像"));
+        ui_.saveButton->setEnabled(latest_frame_pixels_ != nullptr &&
+                                   !latest_frame_pixels_->empty());
         const double elapsed_seconds =
             std::max(0.001, ui_run_timer_.isValid() ? ui_run_timer_.elapsed() / 1000.0 : 0.001);
         printf("Qt UI painted: %llu (%.2f fps)\n",
@@ -267,6 +284,45 @@ private slots:
         } else {
             statusBar()->showMessage(pcie_qt_ui::Zh("车牌识别模式"));
         }
+    }
+
+    void SaveCurrentImage() {
+        if (latest_frame_pixels_ == nullptr || latest_frame_pixels_->empty() ||
+            latest_frame_width_ <= 0 || latest_frame_height_ <= 0 ||
+            latest_frame_stride_ <= 0) {
+            statusBar()->showMessage(pcie_qt_ui::Zh("暂无可保存图片"));
+            return;
+        }
+
+        QDir save_dir(QApplication::applicationDirPath() + "/saved_images");
+        if (!save_dir.exists() && !save_dir.mkpath(".")) {
+            statusBar()->showMessage(pcie_qt_ui::Zh("保存目录创建失败"));
+            return;
+        }
+
+        const QString timestamp =
+            QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz");
+        const QString basename = pcie_qt_ui::Zh("pcie_overlay_%1_frame%2")
+                                     .arg(timestamp)
+                                     .arg(latest_frame_id_);
+        QString output_path = save_dir.filePath(basename + ".png");
+        const QImage image(latest_frame_pixels_->data(),
+                           latest_frame_width_,
+                           latest_frame_height_,
+                           latest_frame_stride_ * 4,
+                           QImage::Format_RGBA8888);
+        bool saved = image.save(output_path, "PNG");
+        if (!saved) {
+            output_path = save_dir.filePath(basename + ".bmp");
+            saved = image.save(output_path, "BMP");
+        }
+        if (!saved) {
+            statusBar()->showMessage(pcie_qt_ui::Zh("图片保存失败"));
+            return;
+        }
+
+        statusBar()->showMessage(pcie_qt_ui::Zh("图片已保存：%1").arg(output_path));
+        printf("Qt saved image: %s\n", output_path.toUtf8().constData());
     }
 
 private:
@@ -301,6 +357,12 @@ private:
         ui_.resultTableWidget->setRowCount(0);
         ui_.videoLabel->clear();
         ui_.videoLabel->setText(pcie_qt_ui::Zh("等待图像"));
+        latest_frame_pixels_.reset();
+        latest_frame_width_ = 0;
+        latest_frame_height_ = 0;
+        latest_frame_stride_ = 0;
+        latest_frame_id_ = -1;
+        ui_.saveButton->setEnabled(false);
 
         worker_ = new PcieQtWorker(yolov8_model_, lprnet7_model_, lprnet8_model_, this);
         capture_enabled_ = true;
@@ -423,6 +485,11 @@ private:
     double pcie_fps_;
     double display_fps_;
     double inference_fps_;
+    std::shared_ptr<std::vector<unsigned char> > latest_frame_pixels_;
+    int latest_frame_width_;
+    int latest_frame_height_;
+    int latest_frame_stride_;
+    int latest_frame_id_;
     QElapsedTimer ui_run_timer_;
     uint64_t ui_painted_frames_;
     uint64_t last_fps_elapsed_ms_;

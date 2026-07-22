@@ -1,11 +1,14 @@
 import sys
 from rknn.api import RKNN
 
-DATASET_PATH = '../model/dataset.txt'
-DEFAULT_RKNN_PATH = '../model/yolov8.rknn'
+#DATASET_PATH = '../model/dataset.txt' 
+DATASET_PATH = '../model/traffic_dataset.txt'
+#DEFAULT_RKNN_PATH = '../model/yolov8.rknn'
+DEFAULT_RKNN_PATH = '../model/yolov8_traffic_i8.rknn'
 DEFAULT_QUANT = True
 
 # python convert.py ../model/best.onnx rk3568
+# python convert.py ../model/yolov8_traffic.onnx rk3568 i8 ../model/yolov8_traffic_i8.rknn
 
 def parse_arg():
     if len(sys.argv) < 3:
@@ -45,7 +48,8 @@ if __name__ == '__main__':
     # Pre-process config
     print('--> Config model')
     rknn.config(mean_values=[[0, 0, 0]], std_values=[
-                    [255, 255, 255]], target_platform=platform)
+                    [255, 255, 255]], target_platform=platform,quantized_algorithm='kl_divergence',
+                    model_pruning=True)
     print('done')
 
     # Load model

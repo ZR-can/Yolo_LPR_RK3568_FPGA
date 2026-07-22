@@ -1,5 +1,0 @@
-image,scene,expected_person,expected_car,expected_motorcycle,expected_bus,expected_truck,expected_traffic_light,detected_person,detected_car,detected_motorcycle,detected_bus,detected_truck,detected_traffic_light,false_positive_note,miss_note,roi_warning_expected,roi_warning_actual,pass,note
-road_001.jpg,day road,,,,,,,,,,,,,,,,,
-crosswalk_001.jpg,crosswalk,,,,,,,,,,,,,,,,,
-traffic_light_001.jpg,traffic light,,,,,,,,,,,,,,,,,
-
