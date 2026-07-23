@@ -107,5 +107,5 @@ python lprnet_PC_eval.py --onnx_path ../model/lprnet8repair.onnx --quant
 ## 注意事项
 
 - 量化数据集文件路径由脚本内部常量决定，修改模型版本时要同步检查。
-- 不同模型版本的输出命名应保持统一，便于 `3_NPU_Yolov8_LPR_Demo` 直接引用。
+- 不同模型版本的输出命名应保持统一，便于 `3_NPU_Yolov8_PPOCR_Demo` 直接引用。
 - 转换结果是否可用，仍需要最终到 `3` 中完成板端验证。

@@ -105,7 +105,7 @@ python python/convert.py \
 
 ## FP16 RKNN 板端完整验证结果（2026-07-21）
 
-验证环境为 RK3568、RKNN Runtime 2.3.0、NPU 驱动 0.9.8，`RKNN_LOG_LEVEL=0`，预热 20 次。模型输入和输出均为 FP16，输入仍由运行时执行 `(x-127.5)/127.5`。验证集共 17,357 张，以下结果统一采用未经车牌规则修正的原始 CTC 整牌严格匹配口径。FP16 原始记录见 [evaluation.log](../../3_NPU_Yolov8_LPR_Demo/result/ppocr_fp16_board/evaluation.log) 和 [details.tsv](../../3_NPU_Yolov8_LPR_Demo/result/ppocr_fp16_board/details.tsv)，ONNX 基线见 [README_CBLPRD_RK3568.md](../../1_PC_Training/README_CBLPRD_RK3568.md)。
+验证环境为 RK3568、RKNN Runtime 2.3.0、NPU 驱动 0.9.8，`RKNN_LOG_LEVEL=0`，预热 20 次。模型输入和输出均为 FP16，输入仍由运行时执行 `(x-127.5)/127.5`。验证集共 17,357 张，以下结果统一采用未经车牌规则修正的原始 CTC 整牌严格匹配口径。FP16 原始记录见 [evaluation.log](../../3_NPU_Yolov8_PPOCR_Demo/result/ppocr_fp16_board/evaluation.log) 和 [details.tsv](../../3_NPU_Yolov8_PPOCR_Demo/result/ppocr_fp16_board/details.tsv)，ONNX 基线见 [README_CBLPRD_RK3568.md](../../1_PC_Training/README_CBLPRD_RK3568.md)。
 
 | 子集 | 样本数 | ONNX 正确数 | ONNX 原始准确率 | FP16 正确数 | FP16 原始准确率 | FP16 相对 ONNX 变化 | RKNN 官方推理 | 推理端到端 |
 |------|-------:|------------:|-----------------:|------------:|-----------------:|--------------------:|----------------:|-----------:|
@@ -127,7 +127,7 @@ FP16 共错误 2,052 张，字符错误率（CER）为 1.8190%，对应字符级
 
 ## W8A8 Normal + Per-Channel 板端完整验证结果（2026-07-21）
 
-本次模型实际使用 100 张训练集校准图、`normal` 算法和 `channel` 方法生成；当前 `quant_manifest.tsv` 与 `quant_dataset.txt` 均为 100 条，basic、hard、使、学各 13 张，港、澳、警、领各 12 张。验证环境为 RK3568、RKNN Runtime 2.3.0、NPU 驱动 0.9.8，`RKNN_LOG_LEVEL=0`，预热 20 次。验证集共 17,357 张，以下准确率均为未经车牌规则纠错的原始 CTC 整牌严格匹配结果。原始记录见 [evaluation.log](../../3_NPU_Yolov8_LPR_Demo/result/ppocr_i8_board/evaluation.log) 和 [details.tsv](../../3_NPU_Yolov8_LPR_Demo/result/ppocr_i8_board/details.tsv)。
+本次模型实际使用 100 张训练集校准图、`normal` 算法和 `channel` 方法生成；当前 `quant_manifest.tsv` 与 `quant_dataset.txt` 均为 100 条，basic、hard、使、学各 13 张，港、澳、警、领各 12 张。验证环境为 RK3568、RKNN Runtime 2.3.0、NPU 驱动 0.9.8，`RKNN_LOG_LEVEL=0`，预热 20 次。验证集共 17,357 张，以下准确率均为未经车牌规则纠错的原始 CTC 整牌严格匹配结果。原始记录见 [evaluation.log](../../3_NPU_Yolov8_PPOCR_Demo/result/ppocr_i8_board/evaluation.log) 和 [details.tsv](../../3_NPU_Yolov8_PPOCR_Demo/result/ppocr_i8_board/details.tsv)。
 
 | 子集 | 样本数 | ONNX 原始准确率 | INT8 正确数 | INT8 原始准确率 | 相对 ONNX 下降 | RKNN 官方推理 | 推理端到端 |
 |------|-------:|----------------:|-------------:|----------------:|----------------:|----------------:|-----------:|
@@ -189,7 +189,7 @@ python python/convert.py \
 
 ### 折叠版 FP16 板端完整验证结果（2026-07-21）
 
-折叠版 FP16 在与基线相同的 RK3568、Runtime 2.3.0、驱动 0.9.8、日志等级 0、warmup 20 和 17,357 张验证集条件下完成原始 CTC 严格匹配评估。原始记录见 [evaluation.log](../../3_NPU_Yolov8_LPR_Demo/result/ppocr_fold_affine_fp16_board/evaluation.log) 和 [details.tsv](../../3_NPU_Yolov8_LPR_Demo/result/ppocr_fold_affine_fp16_board/details.tsv)。
+折叠版 FP16 在与基线相同的 RK3568、Runtime 2.3.0、驱动 0.9.8、日志等级 0、warmup 20 和 17,357 张验证集条件下完成原始 CTC 严格匹配评估。原始记录见 [evaluation.log](../../3_NPU_Yolov8_PPOCR_Demo/result/ppocr_fold_affine_fp16_board/evaluation.log) 和 [details.tsv](../../3_NPU_Yolov8_PPOCR_Demo/result/ppocr_fold_affine_fp16_board/details.tsv)。
 
 | 子集 | 样本数 | 基线 FP16 正确数/准确率 | 折叠 FP16 正确数/准确率 | 准确率变化 | 折叠官方推理 | 折叠推理端到端 |
 |------|-------:|-----------------------:|-----------------------:|-----------:|-------------:|---------------:|

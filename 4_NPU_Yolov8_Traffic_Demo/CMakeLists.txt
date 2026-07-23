@@ -13,7 +13,7 @@ find_package(Threads REQUIRED)
 
 option(DISABLE_RGA "Use CPU image conversion instead of RGA" OFF)
 set(TRAFFIC_3RDPARTY_ROOT
-    "${CMAKE_CURRENT_SOURCE_DIR}/../3_NPU_Yolov8_LPR_Demo/3rdparty"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../3_NPU_Yolov8_PPOCR_Demo/3rdparty"
     CACHE PATH "Path to the reused RKNN/RGA/JPEG third-party libraries")
 
 if(NOT TARGET_SOC)

@@ -9,10 +9,10 @@
 
 - 在 PC 侧完成 YOLOv8 / LPRNet 的训练与模型准备
 - 在 Ubuntu 虚拟机中完成 ONNX 到 RKNN 的转换
-- 在 RK3568 端运行 `3_NPU_Yolov8_LPR_Demo`
-- 使用 YOLOv8n 完成车牌定位，裁剪后交给 LPRNet 完成字符识别
+- 在 RK3568 端运行 `3_NPU_Yolov8_PPOCR_Demo`
+- 使用 YOLOv8n 完成车牌定位，裁剪后交给 PP-OCRv4 完成字符识别；LPRNet PCIe 入口仅保留为基准对照
 
-当前 `3` 目录保留本地视频车牌链路，并提供可复用的 PCIe BGR565 / DRM 实时框架；`4` 目录已
+当前 `3` 目录只保留 PCIe BGR565 / DRM 实时车牌链路，不再构建 MPP 视频和单图片入口；`4` 目录已
 基于该框架完成交通规则目标代码，仍需在 Ubuntu 重新交叉编译并完成 RK3568 + FPGA 实链路复测。
 
 ## 目录说明
@@ -21,8 +21,8 @@
   数据处理、YOLOv8 训练、LPRNet 训练与评估。
 - [2_Model_Conversion_PC_Simulation/README.md](2_Model_Conversion_PC_Simulation/README.md)
   ONNX 导出、RKNN 转换、PC 仿真验证。
-- [3_NPU_Yolov8_LPR_Demo/README.md](3_NPU_Yolov8_LPR_Demo/README.md)
-  RK3568 板端 C/C++ Demo、交叉编译、模型打包与板端部署说明。
+- [3_NPU_Yolov8_PPOCR_Demo/README.md](3_NPU_Yolov8_PPOCR_Demo/README.md)
+  RK3568 板端 YOLOv8 + PP-OCR PCIe Demo、LPR 基准入口、交叉编译与板端部署说明。
 - [4_NPU_Yolov8_Traffic_Demo/README.md](4_NPU_Yolov8_Traffic_Demo/README.md)
   RK3568 八类交通 YOLOv8 INT8 图片 benchmark，以及 PCIe BGR565 + DRM 的 person / traffic light
   实时检测和人工斑马线 ROI 闯红灯规则 Demo。
@@ -33,7 +33,7 @@
 
 - Windows 侧用于日常代码修改和 Codex 协作。
 - `1_PC_Training` 与 `2_Model_Conversion_PC_Simulation` 默认运行在 `YOLOv8n_LPRNet` conda 环境中。
-- Ubuntu 20.04 虚拟机用于 ONNX -> RKNN 转换、`3_NPU_Yolov8_LPR_Demo` 交叉编译和板端文件推送。
+- Ubuntu 20.04 虚拟机用于 ONNX -> RKNN 转换、`3_NPU_Yolov8_PPOCR_Demo` 交叉编译和板端文件推送。
 - 项目根目录与 Ubuntu 虚拟机共享，Windows 侧修改后，Ubuntu 侧可直接使用。
 
 ## 使用建议
@@ -42,13 +42,13 @@
 2. 再在 `2_Model_Conversion_PC_Simulation` 中完成 ONNX 导出、RKNN 转换和 PC 侧验证。
 3. 使用 `4_NPU_Yolov8_Traffic_Demo` 验证八类 INT8 YOLOv8 的检测结果和 NPU 性能，再验证
    PCIe 实时 person / traffic light 与斑马线规则链路。
-4. 然后在 `3_NPU_Yolov8_LPR_Demo` 中完成完整车牌链路的交叉编译、板端部署和实机测试。
+4. 然后在 `3_NPU_Yolov8_PPOCR_Demo` 中完成完整车牌链路的交叉编译、板端部署和实机测试。
 5. `4_mes_fpga_dma_memcpy_demo` 用于 FPGA / DMA 读写链路的独立测试，不直接替代主识别链路。
 
 ## 当前维护重点
 
-- `main_video.cc` 与 `main_picture.cc` 都属于后续持续修改和测试的重点入口文件。
-- `3_NPU_Yolov8_LPR_Demo` 的 README 以板端 Demo 使用为主。
+- `3_NPU_Yolov8_PPOCR_Demo/src/main_ppocr.cc` 是当前 PCIe 车牌主入口，`main_lpr.cc` 仅用于基准对照。
+- `3_NPU_Yolov8_PPOCR_Demo` 的 README 以板端 Demo 使用为主。
 - 分支切换后应避免复用旧的 `build/` 和 `install/` 产物，以免编译对象混淆。
 
 ## 2026-07-22 交通 Demo 进度

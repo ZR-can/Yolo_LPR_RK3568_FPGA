@@ -9,7 +9,7 @@
 本工程包含两个相互独立的板端程序：
 
 - `yolov8_traffic_benchmark`：单图或图片目录检测，用于确认模型结果和 NPU 性能。
-- `yolov8_traffic_pcie_demo`：复用 `3_NPU_Yolov8_LPR_Demo` 的 PCIe、固定帧槽和 DRM
+- `yolov8_traffic_pcie_demo`：复用 `3_NPU_Yolov8_PPOCR_Demo` 的 PCIe、固定帧槽和 DRM
   显示链路，实时检测 `person` / `traffic light`，并执行可配置斑马线 ROI 闯红灯规则。
 - `pc_tools/auto_crosswalk_roi_mask2former.py`：PC 端调用本地 FFmpeg 和 Mapillary Vistas
   Mask2Former，从固定机位视频自动生成稳定的斑马线多边形及板端完整运行命令。
@@ -200,7 +200,7 @@ chmod +x build-linux.sh
 ./build-linux.sh
 ```
 
-默认复用 `../3_NPU_Yolov8_LPR_Demo/3rdparty` 中的 RKNN Runtime、RGA 和 TurboJPEG。
+默认复用 `../3_NPU_Yolov8_PPOCR_Demo/3rdparty` 中的 RKNN Runtime、RGA 和 TurboJPEG。
 `librga.a` 依赖 pthread，两个可执行目标都在静态库之后链接 `Threads::Threads`，避免
 `pthread_mutexattr_init` / `DSO missing from command line`。
 

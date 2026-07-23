@@ -41,7 +41,7 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLATFORM="${TARGET_SOC}_linux_${TARGET_ARCH}"
 BUILD_DIR="${ROOT_DIR}/build/build_yolov8_traffic_${PLATFORM}_${BUILD_TYPE}"
 INSTALL_DIR="${ROOT_DIR}/install/${PLATFORM}/rknn_yolov8_traffic_demo"
-THIRDPARTY_ROOT="${TRAFFIC_3RDPARTY_ROOT:-${ROOT_DIR}/../3_NPU_Yolov8_LPR_Demo/3rdparty}"
+THIRDPARTY_ROOT="${TRAFFIC_3RDPARTY_ROOT:-${ROOT_DIR}/../3_NPU_Yolov8_PPOCR_Demo/3rdparty}"
 
 cmake -S "$ROOT_DIR" -B "$BUILD_DIR" \
     -DTARGET_SOC="$TARGET_SOC" \

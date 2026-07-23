@@ -53,9 +53,13 @@ pip install -r requirements.txt
 
 2026-07-21 补录原始 `student_cblprd73` 的 8 子集规则评估：17,357 张验证图的原始整牌准确率为 85.1875%，`ga36_plate_type_io_v2` 修正后为 90.6435%，共修正 947 张且误伤为 0；hard 子集原始准确率仅 51.9912%。完整分子集结果见 `README_CBLPRD_RK3568.md`。
 
-2026-07-18 增加 `scripts/eval_onnx_ppocr_cblprd_subsets.py`：使用与PaddleOCR一致的48×160 BGR预处理、73字符CTC解码和`ga36_plate_type_io_v2`，直接对固定输入ONNX执行8个验证子集及TOTAL评估，并可输出逐图TSV明细。
+2026-07-18 增加 `scripts/eval_onnx_ppocr_cblprd_subsets.py`：使用与PaddleOCR一致的48×160 BGR预处理、73字符CTC解码和集中维护的 `plate_rule.py`，直接对固定输入ONNX执行8个验证子集及TOTAL评估，并可输出逐图TSV明细。
+
+2026-07-23 将训练、ONNX 评估与 RK3568 部署共用的修正规则升级为 `ga36_plate_type_v3`：使馆数字结构不再要求省份前缀，警牌第二位恢复为 `A-Z` 发牌机关规则并允许合法 `I/O`，序号位置继续执行 `O/I -> 0/1`。既有 `ga36_plate_type_io_v2` 准确率属于历史结果，必须以 v3 重新评估后才能横向比较。
 
 2026-07-18 在 `datasets/yolo_lprnet_crops/` 增加 `eval_onnx_blue_green_train_test.py`：直接遍历蓝牌/绿牌的train与test裁剪图，以文件名作为GT，复用相同的ONNX预处理、CTC解码和规则修正并集中输出四组及TOTAL准确率。当前实际图片为blue_train 13,106、green_train 1,913、blue_test 1,404、green_test 608，共17,031张；`classified_txts/yolo_crops_train.txt`与`yolo_crops_test.txt`已按实际图片重建为15,019和2,012条，路径、文件名GT和牌照类型逐条对应，旧test清单中的26条缺图绿牌记录及重复指向train的val清单已移除。
+
+2026-07-23 增加 `datasets/yolo_lprnet_crops/eval_onnx_blue_green_train_test_letterbox.py`：保持原评估流程不变，只将预处理替换为固定左对齐的等比例 letterbox；图像限制在 `160×48` 内，窄图在右侧补零，宽图在上下居中补零，左侧始终不补。`94×24` 样本对应有效区域 `160×41`，上补3行、下补4行，可与原脚本的直接 `160×48` 缩放结果进行同口径对照。
 
 ### 1. 数据处理
 

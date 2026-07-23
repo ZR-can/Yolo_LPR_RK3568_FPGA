@@ -281,6 +281,8 @@ bash scripts/eval_ppocr_cblprd_subsets.sh \
 
 `PlateRuleRecMetric` 复用数据审计脚本的 `ga36_plate_type_io_v2` 规则：先删除预测中的 `·` 和全部空白；仅对 7/8 位且首位为省级行政区简称的预测执行位置修正。`省份简称 + 数字区 + 领`的整个中间区域均按数字位处理，执行 `O/I -> 0/1`；以`警`结尾时保留第二位原字符，只修正第三位及以后的 `O/I`；其余号牌仍将第二位的 `0/1` 修正为 `O/I`，并将第三位及以后的 `O/I` 修正为 `0/1`。标签本身不做规则改写。
 
+2026-07-23 当前源码已升级为 `ga36_plate_type_v3`：使馆牌按无省份前缀的数字结构执行 `O/I -> 0/1`；领馆牌继续按数字机构编号处理；普通、警、学、港、澳牌第二位统一作为 `A-Z` 发牌机关代号，`0/1 -> O/I`，不再保留警牌数字第二位。下面已经记录的准确率均来自 v2，不能标记为 v3 结果，需重新执行服务器评估。
+
 该 Metric 的 `acc` 与 `rule_acc` 都表示规则修正后的准确率，同时输出：
 
 - `raw_acc`：标准验证准确率，不执行规则修正。
@@ -388,7 +390,7 @@ python tools/export_model.py \
 | `ppocrv4_rec14.onnx` | 原始 CTC SVTR + FC 使用 opset 14 导出的 ONNX。 |
 | `ppocrv4_rec14_fold_affine_1x1.onnx` | 在 opset 14 模型上折叠 LearnableAffine：将其缩放和平移吸收到后续 1×1 Conv 的权重和 bias 中，再删除对应的 Mul/Add 节点。 |
 
-`scripts/eval_onnx_ppocr_cblprd_subsets.py`直接评估固定输入`[1,3,48,160]`、输出`[1,20,74]`的上述 CTC ONNX。预处理与PaddleOCR的`RecResizeImg`保持一致：读取BGR图像、按高度48等比例缩放、宽度向上取整、右侧补零到160，再归一化到`[-1,1]`。解码使用73字符字典，CTC blank为索引0，先删除连续重复再删除blank；随后执行`ga36_plate_type_io_v2`规则。
+`scripts/eval_onnx_ppocr_cblprd_subsets.py`直接评估固定输入`[1,3,48,160]`、输出`[1,20,74]`的上述 CTC ONNX。预处理与PaddleOCR的`RecResizeImg`保持一致：读取BGR图像、按高度48等比例缩放、宽度向上取整、右侧补零到160，再归一化到`[-1,1]`。解码使用73字符字典，CTC blank为索引0，先删除连续重复再删除blank；随后加载 `plate_rule.py` 当前声明的规则版本，现为 `ga36_plate_type_v3`。
 
 在服务器PaddleOCR目录运行：
 
@@ -422,7 +424,7 @@ done
 
 #### 2026-07-21 ONNX 变体全量对比
 
-在 RTX 4090 服务器上使用 `CUDAExecutionProvider`、同一份 17,357 张验证集和 `ga36_plate_type_io_v2` 规则完成三份 ONNX 的全量评估。`ppocrv4_rec14.onnx` 与 `ppocrv4_rec.onnx` 的所有分子集统计完全一致，也与上表结果一致；`ppocrv4_rec14_fold_affine_1x1.onnx` 的汇总结果如下：
+在 RTX 4090 服务器上使用 `CUDAExecutionProvider`、同一份 17,357 张验证集和当时的 `ga36_plate_type_io_v2` 规则完成三份 ONNX 的全量评估。`ppocrv4_rec14.onnx` 与 `ppocrv4_rec.onnx` 的所有分子集统计完全一致，也与上表结果一致；`ppocrv4_rec14_fold_affine_1x1.onnx` 的汇总结果如下：
 
 | ONNX 模型 | samples | raw_correct | raw_accuracy | rule_correct | rule_accuracy | changed | fixed | harmed |
 | ---------- | ------: | ----------: | -----------: | -----------: | ------------: | ------: | ----: | -----: |
@@ -507,6 +509,33 @@ python eval_onnx_blue_green_train_test.py \
 | `ppocrv4_rec14_fold_affine_1x1.onnx` | 30.43 s | 559.70 images/s |
 
 三份模型的整牌准确率和规则修正结果没有差异。本次单轮测试中，折叠版本相对 `ppocrv4_rec.onnx` 吞吐率提高约 `9.81%`，相对 `ppocrv4_rec14.onnx` 提高约 `13.27%`；性能结论仍应通过相同环境下的多轮重复测试确认。
+
+#### yolo_lprnet_crops Letterbox 对照测试
+
+`eval_onnx_blue_green_train_test_letterbox.py` 复用原脚本的模型加载、四组数据遍历、CTC 解码、规则修正和统计逻辑，仅替换输入预处理。图像等比例缩放到 `160×48` 内并固定左对齐：宽高比不超过 `160/48` 时在右侧补零，超过时在上下居中补零，左侧始终不补。当前 `94×24` 数据缩放为 `160×41`，上补3行、下补4行；归一化和原脚本一致，输出仍为 FP32 `[1,3,48,160]`。
+
+```bash
+cd /root/RK3568_FPGA_Project/1_PC_Training/PaddleOCR/scripts
+
+python eval_onnx_blue_green_train_test_letterbox.py \
+  --dataset-root /root/RK3568_FPGA_Project/1_PC_Training/PaddleOCR/yolo_lprnet_crops \
+  --character-dict /root/RK3568_FPGA_Project/1_PC_Training/PaddleOCR/ppocr/utils/cblprd_plate_dict.txt \
+  --provider cuda \
+  --progress-step 100 \
+  --model /root/RK3568_FPGA_Project/1_PC_Training/PaddleOCR/onnx/ppocrv4_rec14_fold_affine_1x1.onnx \
+  --save-details onnx_blue_green_letterbox_eval_details.tsv
+```
+
+该结果应与原脚本记录的 `TOTAL raw_accuracy=93.9170%`、`rule_accuracy=94.2869%` 分别对照，并重点比较 `blue_test` 和 `green_test`，不能跨模型或跨运行环境混合比较耗时。
+
+三份 ONNX 在 yolo_lprnet_crops 上Letterbox 对照的全部分子集使用统计完全一致，共同结果为：
+| subset      | samples | raw_correct | raw_accuracy | rule_correct | rule_accuracy | changed | fixed | harmed |
+|-------------|--------:|-----------:|------------:|-------------:|--------------:|--------:|------:|------:|
+| blue_train  | 13106  | 12153      | 92.7285%    | 12228        | 93.3008%      | 88     | 75    | 0     |
+| green_train | 1913   | 1789       | 93.5180%    | 1789         | 93.5180%      | 1      | 0     | 0     |
+| blue_test   | 1404   | 1305       | 92.9487%    | 1314         | 93.5897%      | 12     | 9     | 0     |
+| green_test  | 608    | 548        | 90.1316%    | 548          | 90.1316%      | 0      | 0     | 0     |
+| TOTAL       | 17031  | 15795      | 92.7426%    | 15879        | 93.2359%      | 101    | 84    | 0     |
 
 ## 必须保持的部署约束
 
