@@ -38,6 +38,12 @@ struct PcieUiStatus {
     std::string plate_text;
     std::string plate_type;
     float plate_confidence = 0.0f;
+    std::string traffic_light_state;
+    int traffic_person_count = 0;
+    int traffic_person_id_total = 0;
+    int traffic_persons_in_crosswalk = 0;
+    int traffic_violation_count = 0;
+    int traffic_violation_event_total = 0;
     std::string message;
 };
 
@@ -55,5 +61,15 @@ int RunPcieDemo(const char* yolov8_model,
                 const char* lprnet7_model,
                 const char* lprnet8_model,
                 const PcieUiCallbacks* callbacks);
+
+int RunPpocrPcieDemo(const char* yolov8_model,
+                     const char* ppocr_model,
+                     const char* dictionary,
+                     const PcieUiCallbacks* callbacks);
+
+int RunPpocrPcieImageDemo(const char* yolov8_model,
+                          const char* ppocr_model,
+                          const char* dictionary,
+                          const PcieUiCallbacks* callbacks);
 
 #endif  // PCIE_DEMO_BRIDGE_H_

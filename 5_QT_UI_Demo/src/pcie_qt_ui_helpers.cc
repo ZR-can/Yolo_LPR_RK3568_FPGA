@@ -16,8 +16,8 @@ QString Zh(const char* text) {
 void LoadChineseFont(QApplication* app) {
     const QString app_dir = QApplication::applicationDirPath();
     const QStringList font_paths = {
+        app_dir + "/assets/fonts/simhei.ttf",
         app_dir + "/simhei.ttf",
-        app_dir + "/model/simhei.ttf",
     };
 
     for (const QString& path : font_paths) {

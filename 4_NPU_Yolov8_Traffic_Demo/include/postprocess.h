@@ -15,7 +15,7 @@
 #define NMS_THRESH 0.5f
 #define BOX_THRESH 0.25f
 
-// class rknn_app_context_t;
+// traffic_rknn_app_context_t is declared by yolov8.h before this header.
 
 typedef struct {
     image_rect_t box;
@@ -29,8 +29,13 @@ typedef struct {
     object_detect_result results[OBJ_NUMB_MAX_SIZE];
 } object_detect_result_list;
 
-int init_post_process(const char *label_path);
-void deinit_post_process();
+int init_traffic_post_process(const char *label_path);
+void deinit_traffic_post_process();
 const char *traffic_cls_to_name(int cls_id);
-int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter_box, float conf_threshold, float nms_threshold, object_detect_result_list *od_results);
+int traffic_post_process(traffic_rknn_app_context_t *app_ctx,
+                         void *outputs,
+                         letterbox_t *letter_box,
+                         float conf_threshold,
+                         float nms_threshold,
+                         object_detect_result_list *od_results);
 #endif //_RKNN_YOLOV8_DEMO_POSTPROCESS_H_

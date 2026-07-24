@@ -525,7 +525,7 @@ static int process_i8_rv1106(int8_t *box_tensor, int32_t box_zp, float box_scale
 }
 #endif
 
-int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter_box, float conf_threshold, float nms_threshold, object_detect_result_list *od_results)
+int traffic_post_process(traffic_rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter_box, float conf_threshold, float nms_threshold, object_detect_result_list *od_results)
 {
 #if defined(RV1106_1103) 
     rknn_tensor_mem **_outputs = (rknn_tensor_mem **)outputs;
@@ -711,7 +711,7 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
     return 0;
 }
 
-int init_post_process(const char *label_path)
+int init_traffic_post_process(const char *label_path)
 {
     if (label_path == nullptr)
     {
@@ -722,7 +722,7 @@ int init_post_process(const char *label_path)
     if (ret < 0)
     {
         printf("Load %s failed!\n", label_path);
-        deinit_post_process();
+        deinit_traffic_post_process();
         return -1;
     }
     return 0;
@@ -743,7 +743,7 @@ const char *traffic_cls_to_name(int cls_id)
     return "null";
 }
 
-void deinit_post_process()
+void deinit_traffic_post_process()
 {
     for (int i = 0; i < OBJ_CLASS_NUM; i++)
     {

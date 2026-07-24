@@ -36,7 +36,7 @@ static void dump_tensor_attr(rknn_tensor_attr *attr) {
            attr->scale);
 }
 
-int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx) {
+int init_traffic_yolov8_model(const char *model_path, traffic_rknn_app_context_t *app_ctx) {
     int ret;
     int model_len = 0;
     char *model;
@@ -181,7 +181,7 @@ int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx) {
     return 0;
 }
 
-int NC1HWC2_i8_to_NCHW_i8(const int8_t *src, int8_t *dst, int *dims, int channel, int h, int w, int zp, float scale) {
+int traffic_NC1HWC2_i8_to_NCHW_i8(const int8_t *src, int8_t *dst, int *dims, int channel, int h, int w, int zp, float scale) {
     int batch  = dims[0];
     int C1     = dims[1];
     int C2     = dims[4];
@@ -205,7 +205,7 @@ int NC1HWC2_i8_to_NCHW_i8(const int8_t *src, int8_t *dst, int *dims, int channel
     return 0;
 }
 
-int release_yolov8_model(rknn_app_context_t *app_ctx) {
+int release_traffic_yolov8_model(traffic_rknn_app_context_t *app_ctx) {
     int ret;
     if (app_ctx->input_attrs != NULL) {
         free(app_ctx->input_attrs);
@@ -254,7 +254,7 @@ int release_yolov8_model(rknn_app_context_t *app_ctx) {
     return 0;
 }
 
-int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, object_detect_result_list *od_results) {
+int inference_traffic_yolov8_model(traffic_rknn_app_context_t *app_ctx, image_buffer_t *img, object_detect_result_list *od_results) {
     int ret;
     image_buffer_t dst_img;
     letterbox_t letter_box;
@@ -312,8 +312,11 @@ int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, obj
             outputs[i].size = app_ctx->output_native_attrs[i].n_elems * sizeof(int8_t);
             outputs[i].buf = (int8_t *)malloc(outputs[i].size);
             if (app_ctx->output_native_attrs[i].fmt == RKNN_TENSOR_NC1HWC2) {
-                NC1HWC2_i8_to_NCHW_i8((int8_t *)app_ctx->output_mems[i]->virt_addr, (int8_t *)outputs[i].buf,
-                                      (int *)app_ctx->output_native_attrs[i].dims, channel, h, w, zp, scale);
+                traffic_NC1HWC2_i8_to_NCHW_i8(
+                    (int8_t *)app_ctx->output_mems[i]->virt_addr,
+                    (int8_t *)outputs[i].buf,
+                    (int *)app_ctx->output_native_attrs[i].dims,
+                    channel, h, w, zp, scale);
             } else {
                 memcpy(outputs[i].buf, app_ctx->output_mems[i]->virt_addr, outputs[i].size);
             }
@@ -324,7 +327,8 @@ int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, obj
     }
 
     // Post Process
-    post_process(app_ctx, outputs, &letter_box, box_conf_threshold, nms_threshold, od_results);
+    traffic_post_process(
+        app_ctx, outputs, &letter_box, box_conf_threshold, nms_threshold, od_results);
 
     for (int i = 0; i < app_ctx->io_num.n_output; i++) {
         free(outputs[i].buf);
@@ -335,7 +339,7 @@ out:
 }
 
 
-int inference_yolov8_model_preprocessed(rknn_app_context_t *app_ctx, object_detect_result_list *od_results) {
+int inference_traffic_yolov8_model_preprocessed(traffic_rknn_app_context_t *app_ctx, object_detect_result_list *od_results) {
     int ret;
     letterbox_t letter_box;
     const float nms_threshold = NMS_THRESH;
@@ -370,8 +374,11 @@ int inference_yolov8_model_preprocessed(rknn_app_context_t *app_ctx, object_dete
             outputs[i].size = app_ctx->output_native_attrs[i].n_elems * sizeof(int8_t);
             outputs[i].buf = (int8_t *)malloc(outputs[i].size);
             if (app_ctx->output_native_attrs[i].fmt == RKNN_TENSOR_NC1HWC2) {
-                NC1HWC2_i8_to_NCHW_i8((int8_t *)app_ctx->output_mems[i]->virt_addr, (int8_t *)outputs[i].buf,
-                                      (int *)app_ctx->output_native_attrs[i].dims, channel, h, w, zp, scale);
+                traffic_NC1HWC2_i8_to_NCHW_i8(
+                    (int8_t *)app_ctx->output_mems[i]->virt_addr,
+                    (int8_t *)outputs[i].buf,
+                    (int *)app_ctx->output_native_attrs[i].dims,
+                    channel, h, w, zp, scale);
             } else {
                 memcpy(outputs[i].buf, app_ctx->output_mems[i]->virt_addr, outputs[i].size);
             }
@@ -382,7 +389,8 @@ int inference_yolov8_model_preprocessed(rknn_app_context_t *app_ctx, object_dete
         (void)hw;
     }
 
-    post_process(app_ctx, outputs, &letter_box, box_conf_threshold, nms_threshold, od_results);
+    traffic_post_process(
+        app_ctx, outputs, &letter_box, box_conf_threshold, nms_threshold, od_results);
 
     for (int i = 0; i < app_ctx->io_num.n_output; i++) {
         free(outputs[i].buf);

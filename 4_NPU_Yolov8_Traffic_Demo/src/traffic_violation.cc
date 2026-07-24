@@ -166,11 +166,11 @@ TrafficLightResult EstimateLight(const image_buffer_t* image,
 
 TrafficRoiConfig default_traffic_roi() {
     TrafficRoiConfig config;
-    config.points.push_back({0.969263f, 0.721167f});
-    config.points.push_back({0.225580f, 1.000000f});
-    config.points.push_back({0.000000f, 1.000000f});
-    config.points.push_back({0.000000f, 0.842520f});
-    config.points.push_back({0.684032f, 0.691061f});
+    config.points.push_back({1.000000f, 0.695622f});
+    config.points.push_back({1.000000f, 0.765115f});
+    config.points.push_back({0.000000f, 0.886727f});
+    config.points.push_back({0.000000f, 0.645587f});
+    config.points.push_back({0.661587f, 0.615705f});
     return config;
 }
 

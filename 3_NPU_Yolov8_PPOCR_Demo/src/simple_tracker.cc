@@ -305,6 +305,16 @@ void UpdateLatestPlateObservation(TrackedPlate* track,
 
 }  // namespace
 
+void build_single_inference_plate_results(
+    const std::vector<PipelineResult>& detections,
+    std::vector<PipelineResult>& out_results) {
+    out_results = detections;
+    for (PipelineResult& result : out_results) {
+        result.has_valid_plate_text =
+            is_valid_ga36_plate(result.plate_name, result.plate_type);
+    }
+}
+
 SimplePlateTracker::SimplePlateTracker() = default;
 
 void SimplePlateTracker::reset() {
@@ -447,7 +457,8 @@ void SimplePlateTracker::update(const std::vector<PipelineResult>& detections, i
             tk.text_color = det.text_color;
             UpdateLatestPlateObservation(&tk, det.plate_name);
 
-            if (is_valid_plate(det.plate_name, tk.plate_type)) {
+            if (tk.latest_plate_hits >= min_hits_ &&
+                is_valid_plate(det.plate_name, tk.plate_type)) {
                 tk.plate_votes[det.plate_name] += tk.confidence;
             }
         }
@@ -474,7 +485,8 @@ void SimplePlateTracker::update(const std::vector<PipelineResult>& detections, i
             new_tk.text_color = det.text_color;
             UpdateLatestPlateObservation(&new_tk, det.plate_name);
 
-            if (is_valid_plate(det.plate_name, new_tk.plate_type)) {
+            if (new_tk.latest_plate_hits >= min_hits_ &&
+                is_valid_plate(det.plate_name, new_tk.plate_type)) {
                 new_tk.plate_votes[det.plate_name] += new_tk.confidence;
             }
             tracks_.push_back(new_tk);

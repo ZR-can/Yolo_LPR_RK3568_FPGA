@@ -20,6 +20,7 @@
 #include "drm_display.h"
 #include "image_utils.h"
 #include "pcie_frame_source.h"
+#include "traffic_pcie_bridge.h"
 #include "traffic_overlay_renderer.h"
 #include "traffic_temporal_tracker.h"
 #include "traffic_violation.h"
@@ -50,7 +51,9 @@ void HandleSignal(int) {
     g_should_stop = 1;
     static const char message[] =
         "\nTraffic PCIe: stop requested; stopping capture and worker threads\n";
-    (void)write(STDERR_FILENO, message, sizeof(message) - 1);
+    const ssize_t written =
+        write(STDERR_FILENO, message, sizeof(message) - 1);
+    (void)written;
     errno = saved_errno;
 }
 
@@ -281,7 +284,7 @@ struct PipelinePerformance {
 };
 
 struct TrafficAppContext {
-    rknn_app_context_t yolo;
+    traffic_rknn_app_context_t yolo;
     DrmDisplay drm;
     bool drm_initialized;
     TrafficRoiConfig roi;
@@ -327,7 +330,7 @@ void InferenceThread(TrafficAppContext* context) {
         const std::chrono::steady_clock::time_point inference_begin =
             std::chrono::steady_clock::now();
         const int inference_result =
-            inference_yolov8_model(&context->yolo, &image, &detections);
+            inference_traffic_yolov8_model(&context->yolo, &image, &detections);
         const double inference_ms = ElapsedMilliseconds(inference_begin);
         context->performance.inference_ms += inference_ms;
 
@@ -391,14 +394,82 @@ TrafficFrameAnalysis GetLatestAnalysis(TrafficAppContext* context) {
     return waiting;
 }
 
-void DisplayThread(TrafficAppContext* context) {
+PcieUiStatus BuildUiStatus(const TrafficAppContext& context,
+                           const PcieFrameSource& source,
+                           uint64_t start_ms,
+                           bool worker_alive,
+                           bool capturing,
+                           bool pcie_open,
+                           const std::string& message,
+                           const TrafficFrameAnalysis& analysis) {
+    PcieUiStatus status;
+    status.worker_alive = worker_alive;
+    status.capturing = capturing;
+    status.pcie_open = pcie_open;
+    status.start_ms = start_ms;
+    status.elapsed_ms = NowMilliseconds() - start_ms;
+    status.captured_frames = context.performance.captured_frames.load();
+    status.display_pipeline_frames = context.performance.displayed_frames.load();
+    status.displayed_frames = context.performance.displayed_frames.load();
+    status.inference_jobs = context.performance.inference_jobs.load();
+    status.inference_failures = context.performance.inference_failures.load();
+    status.frame_pool_drops = context.performance.frame_pool_drops.load();
+    status.display_queue_drops = context.display_queue.Dropped();
+    status.inference_queue_drops = context.inference_queue.Dropped();
+    const uint64_t displayed_frames = context.performance.displayed_frames.load();
+    if (displayed_frames > 0) {
+        status.avg_end_to_end_ms =
+            context.performance.end_to_end_ms / displayed_frames;
+    }
+    status.vendor_id = source.DeviceInfo().vendor_id;
+    status.device_id = source.DeviceInfo().device_id;
+    status.link_speed = source.DeviceInfo().link_speed;
+    status.link_width = source.DeviceInfo().link_width;
+    status.max_payload_size = source.DeviceInfo().max_payload_size;
+    status.traffic_light_state = traffic_light_state_name(analysis.light.state);
+    status.traffic_person_count = analysis.person_count;
+    status.traffic_person_id_total = analysis.person_id_total;
+    status.traffic_persons_in_crosswalk = analysis.persons_in_crosswalk;
+    status.traffic_violation_count = analysis.violation_count;
+    status.traffic_violation_event_total = analysis.violation_event_total;
+    status.message = message;
+    return status;
+}
+
+void DisplayThread(TrafficAppContext* context,
+                   const PcieUiCallbacks* callbacks,
+                   const PcieFrameSource& source,
+                   uint64_t start_ms) {
     std::printf("[Traffic Display] thread started\n");
+    const bool qt_mode = callbacks != nullptr;
+    if (!context->drm_initialized && !qt_mode) {
+        return;
+    }
     std::shared_ptr<PcieFrame> frame;
     int consecutive_present_failures = 0;
     while (context->display_queue.WaitAndPop(&frame)) {
+        if (qt_mode && callbacks->can_accept_frame &&
+            !callbacks->can_accept_frame()) {
+            frame.reset();
+            continue;
+        }
+
         image_buffer_t raw_image = MakeBgr565Image(frame.get());
         image_buffer_t ui_buffer;
-        if (drm_display_get_ui_buffer(&context->drm, &ui_buffer) != 0) {
+        std::memset(&ui_buffer, 0, sizeof(ui_buffer));
+        std::shared_ptr<std::vector<unsigned char> > rgba_pixels;
+        if (qt_mode) {
+            rgba_pixels = std::make_shared<std::vector<unsigned char> >(
+                PcieFrameSource::kFrameWidth * PcieFrameSource::kFrameHeight * 4U);
+            ui_buffer.width = PcieFrameSource::kFrameWidth;
+            ui_buffer.height = PcieFrameSource::kFrameHeight;
+            ui_buffer.width_stride = PcieFrameSource::kFrameWidth;
+            ui_buffer.height_stride = PcieFrameSource::kFrameHeight;
+            ui_buffer.format = IMAGE_FORMAT_RGBA8888;
+            ui_buffer.virt_addr = rgba_pixels->data();
+            ui_buffer.size = static_cast<int>(rgba_pixels->size());
+            ui_buffer.fd = -1;
+        } else if (drm_display_get_ui_buffer(&context->drm, &ui_buffer) != 0) {
             ++context->performance.display_failures;
             frame.reset();
             continue;
@@ -419,6 +490,30 @@ void DisplayThread(TrafficAppContext* context) {
             ++context->performance.overlay_failures;
         }
         context->performance.overlay_ms += ElapsedMilliseconds(begin);
+
+        if (qt_mode) {
+            context->performance.end_to_end_ms +=
+                static_cast<double>(NowMilliseconds() - frame->enqueue_ms);
+            ++context->performance.displayed_frames;
+            const PcieUiStatus status =
+                BuildUiStatus(*context, source, start_ms, true, true, true, "", analysis);
+            if (callbacks->on_status) {
+                callbacks->on_status(status);
+            }
+            if (callbacks->on_frame) {
+                PcieUiFrame ui_frame;
+                ui_frame.pixels = rgba_pixels;
+                ui_frame.width = ui_buffer.width;
+                ui_frame.height = ui_buffer.height;
+                ui_frame.stride = ui_buffer.width_stride > 0
+                                      ? ui_buffer.width_stride
+                                      : ui_buffer.width;
+                ui_frame.frame_id = frame->frame_id;
+                callbacks->on_frame(ui_frame, status);
+            }
+            frame.reset();
+            continue;
+        }
 
         begin = std::chrono::steady_clock::now();
         if (drm_display_commit_ui(&context->drm) == 0) {
@@ -512,9 +607,12 @@ void PrintPerformance(const TrafficAppContext& context,
     std::printf("=============================================\n");
 }
 
-int RunTrafficPcieDemo(const CommandLineOptions& options) {
+int RunTrafficPcieDemo(const CommandLineOptions& options,
+                       const PcieUiCallbacks* callbacks) {
     g_should_stop = 0;
-    if (InstallSignalHandlers() != 0) {
+    const bool qt_mode = callbacks != nullptr;
+    const bool use_signal_handlers = !qt_mode;
+    if (use_signal_handlers && InstallSignalHandlers() != 0) {
         std::fprintf(stderr, "Failed to install signal handlers\n");
         return -1;
     }
@@ -534,11 +632,11 @@ int RunTrafficPcieDemo(const CommandLineOptions& options) {
                 context.inference_interval);
     PrintRoi(context.roi);
 
-    if (init_post_process(labels_path.c_str()) != 0) {
+    if (init_traffic_post_process(labels_path.c_str()) != 0) {
         return -1;
     }
-    if (init_yolov8_model(options.model_path.c_str(), &context.yolo) != 0) {
-        deinit_post_process();
+    if (init_traffic_yolov8_model(options.model_path.c_str(), &context.yolo) != 0) {
+        deinit_traffic_post_process();
         return -1;
     }
     context.yolo.person_light_only = true;
@@ -546,61 +644,99 @@ int RunTrafficPcieDemo(const CommandLineOptions& options) {
     std::printf("Temporal rules: person hold=8 inference frames, light vote=3-of-5\n");
     if (context.temporal_tracker.Init(context.roi) != 0) {
         std::fprintf(stderr, "Traffic temporal tracker initialization failed\n");
-        release_yolov8_model(&context.yolo);
-        deinit_post_process();
+        release_traffic_yolov8_model(&context.yolo);
+        deinit_traffic_post_process();
         return -1;
     }
 
-    if (drm_display_init(&context.drm,
+    int overlay_width = PcieFrameSource::kFrameWidth;
+    int overlay_height = PcieFrameSource::kFrameHeight;
+    if (!qt_mode &&
+        drm_display_init(&context.drm,
                          PcieFrameSource::kFrameWidth,
-                         PcieFrameSource::kFrameHeight) != 0 ||
-        context.overlay_renderer.Init(context.drm.ui_width,
-                                      context.drm.ui_height,
-                                      context.roi) != 0) {
+                         PcieFrameSource::kFrameHeight) != 0) {
         std::fprintf(stderr, "Traffic DRM display initialization failed\n");
-        drm_display_deinit(&context.drm);
-        release_yolov8_model(&context.yolo);
-        deinit_post_process();
+        release_traffic_yolov8_model(&context.yolo);
+        deinit_traffic_post_process();
         return -1;
     }
-    context.drm_initialized = true;
+    if (!qt_mode) {
+        context.drm_initialized = true;
+        overlay_width = context.drm.ui_width;
+        overlay_height = context.drm.ui_height;
+    }
+    if (context.overlay_renderer.Init(
+            overlay_width, overlay_height, context.roi) != 0) {
+        std::fprintf(stderr, "Traffic overlay initialization failed\n");
+        if (context.drm_initialized) {
+            drm_display_deinit(&context.drm);
+            context.drm_initialized = false;
+        }
+        release_traffic_yolov8_model(&context.yolo);
+        deinit_traffic_post_process();
+        return -1;
+    }
 
     if (source.Open() != 0) {
-        drm_display_deinit(&context.drm);
-        context.drm_initialized = false;
-        release_yolov8_model(&context.yolo);
-        deinit_post_process();
+        if (context.drm_initialized) {
+            drm_display_deinit(&context.drm);
+            context.drm_initialized = false;
+        }
+        release_traffic_yolov8_model(&context.yolo);
+        deinit_traffic_post_process();
         return -1;
     }
 
-    const int signal_mask_result = SetTerminationSignalMask(SIG_BLOCK);
-    if (signal_mask_result != 0) {
+    const int signal_mask_result =
+        use_signal_handlers ? SetTerminationSignalMask(SIG_BLOCK) : 0;
+    if (use_signal_handlers && signal_mask_result != 0) {
         std::fprintf(stderr, "Failed to block worker termination signals: %s\n",
                      std::strerror(signal_mask_result));
         source.Close();
-        drm_display_deinit(&context.drm);
-        release_yolov8_model(&context.yolo);
-        deinit_post_process();
+        if (context.drm_initialized) {
+            drm_display_deinit(&context.drm);
+            context.drm_initialized = false;
+        }
+        release_traffic_yolov8_model(&context.yolo);
+        deinit_traffic_post_process();
         return -1;
     }
 
     const uint64_t start_ms = NowMilliseconds();
     std::thread inference_thread(InferenceThread, &context);
-    std::thread display_thread(DisplayThread, &context);
-    const int signal_unmask_result = SetTerminationSignalMask(SIG_UNBLOCK);
-    if (signal_unmask_result != 0) {
+    std::thread display_thread(
+        DisplayThread, &context, callbacks, std::cref(source), start_ms);
+    const int signal_unmask_result =
+        use_signal_handlers ? SetTerminationSignalMask(SIG_UNBLOCK) : 0;
+    if (use_signal_handlers && signal_unmask_result != 0) {
         std::fprintf(stderr, "Failed to route termination signals to capture thread: %s\n",
                      std::strerror(signal_unmask_result));
         g_should_stop = 1;
     }
 
+    if (callbacks != nullptr && callbacks->on_status) {
+        callbacks->on_status(BuildUiStatus(
+            context, source, start_ms, true, true, true,
+            "等待首帧", GetLatestAnalysis(&context)));
+    }
+
     std::vector<unsigned char> drain_buffer(PcieFrameSource::kFrameBytes);
     int next_frame_id = 0;
     int capture_result = 0;
+    uint64_t last_status_ms = start_ms;
     uint64_t last_retry_log_ms = start_ms;
     std::printf("Waiting for 1280x720 BGR565 PCIe frames...\n");
     while (!g_should_stop) {
-        std::shared_ptr<PcieFrame> frame = frame_pool.Acquire();
+        if (callbacks != nullptr && callbacks->should_stop &&
+            callbacks->should_stop()) {
+            g_should_stop = 1;
+            break;
+        }
+        const bool capture_enabled =
+            !(callbacks != nullptr && callbacks->capture_enabled &&
+              !callbacks->capture_enabled());
+        std::shared_ptr<PcieFrame> frame =
+            capture_enabled ? frame_pool.Acquire() : std::shared_ptr<PcieFrame>();
         unsigned char* destination = frame ? frame->pixels.data() : drain_buffer.data();
         const PcieFrameReadResult read_result =
             source.ReadFrame(destination, PcieFrameSource::kFrameBytes);
@@ -618,6 +754,14 @@ int RunTrafficPcieDemo(const CommandLineOptions& options) {
                              static_cast<unsigned long long>(statistics.other_errors));
                 last_retry_log_ms = now_ms;
             }
+            if (callbacks != nullptr && callbacks->on_status &&
+                now_ms - last_status_ms >= 1000U) {
+                callbacks->on_status(BuildUiStatus(
+                    context, source, start_ms, true, capture_enabled, true,
+                    capture_enabled ? "等待PCIe帧数据" : "暂停中，保持PCIe读取",
+                    GetLatestAnalysis(&context)));
+                last_status_ms = now_ms;
+            }
             frame.reset();
             if (!g_should_stop) {
                 usleep(1000);
@@ -627,6 +771,18 @@ int RunTrafficPcieDemo(const CommandLineOptions& options) {
         if (read_result == PCIE_FRAME_FATAL) {
             capture_result = -1;
             break;
+        }
+
+        if (!capture_enabled) {
+            const uint64_t now_ms = NowMilliseconds();
+            if (callbacks != nullptr && callbacks->on_status &&
+                now_ms - last_status_ms >= 1000U) {
+                callbacks->on_status(BuildUiStatus(
+                    context, source, start_ms, true, false, true,
+                    "暂停中，保持PCIe读取", GetLatestAnalysis(&context)));
+                last_status_ms = now_ms;
+            }
+            continue;
         }
 
         const int frame_id = next_frame_id++;
@@ -656,22 +812,36 @@ int RunTrafficPcieDemo(const CommandLineOptions& options) {
     }
     context.display_queue.Clear();
     context.inference_queue.Clear();
-    drm_display_deinit(&context.drm);
-    context.drm_initialized = false;
+    if (context.drm_initialized) {
+        drm_display_deinit(&context.drm);
+        context.drm_initialized = false;
+    }
     PrintPerformance(context, source, start_ms);
 
-    const int release_result = release_yolov8_model(&context.yolo);
-    deinit_post_process();
+    const int release_result = release_traffic_yolov8_model(&context.yolo);
+    deinit_traffic_post_process();
     return capture_result == 0 && release_result == 0 ? 0 : -1;
 }
 
 }  // namespace
 
+int RunTrafficPcieQtDemo(const char* model_path,
+                         const PcieUiCallbacks* callbacks) {
+    if (model_path == nullptr || callbacks == nullptr) {
+        return -1;
+    }
+    CommandLineOptions options;
+    options.model_path = model_path;
+    return RunTrafficPcieDemo(options, callbacks);
+}
+
+#if !defined(TRAFFIC_QT_UI_BUILD)
 int main(int argc, char** argv) {
     CommandLineOptions options;
     if (!ParseCommandLine(argc, argv, &options)) {
         PrintUsage(argv[0]);
         return EXIT_FAILURE;
     }
-    return RunTrafficPcieDemo(options) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    return RunTrafficPcieDemo(options, nullptr) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
+#endif

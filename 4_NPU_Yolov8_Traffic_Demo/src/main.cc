@@ -200,7 +200,7 @@ bool benchmark_image(const std::string &image_path,
                      const std::string &output_directory,
                      int warmup_count,
                      int repeat_count,
-                     rknn_app_context_t *context,
+                     traffic_rknn_app_context_t *context,
                      BenchmarkStats *stats)
 {
     image_buffer_t image;
@@ -214,7 +214,7 @@ bool benchmark_image(const std::string &image_path,
     std::memset(&detections, 0, sizeof(detections));
 
     for (int i = 0; i < warmup_count; ++i) {
-        if (inference_yolov8_model(context, &image, &detections) != 0) {
+        if (inference_traffic_yolov8_model(context, &image, &detections) != 0) {
             std::fprintf(stderr, "Warmup failed for: %s\n", image_path.c_str());
             std::free(image.virt_addr);
             return false;
@@ -226,7 +226,7 @@ bool benchmark_image(const std::string &image_path,
     int image_npu_samples = 0;
     for (int i = 0; i < repeat_count; ++i) {
         const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-        const int ret = inference_yolov8_model(context, &image, &detections);
+        const int ret = inference_traffic_yolov8_model(context, &image, &detections);
         const std::chrono::steady_clock::time_point finish = std::chrono::steady_clock::now();
         if (ret != 0) {
             std::fprintf(stderr, "Inference failed for: %s\n", image_path.c_str());
@@ -346,15 +346,15 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    if (init_post_process(label_path.c_str()) != 0) {
+    if (init_traffic_post_process(label_path.c_str()) != 0) {
         return EXIT_FAILURE;
     }
 
-    rknn_app_context_t context;
+    traffic_rknn_app_context_t context;
     std::memset(&context, 0, sizeof(context));
     context.person_light_only = false;
-    if (init_yolov8_model(model_path.c_str(), &context) != 0) {
-        deinit_post_process();
+    if (init_traffic_yolov8_model(model_path.c_str(), &context) != 0) {
+        deinit_traffic_post_process();
         return EXIT_FAILURE;
     }
 
@@ -373,7 +373,7 @@ int main(int argc, char **argv)
         write_summary(output_directory, warmup_count, repeat_count, stats);
     }
 
-    const int release_ret = release_yolov8_model(&context);
-    deinit_post_process();
+    const int release_ret = release_traffic_yolov8_model(&context);
+    deinit_traffic_post_process();
     return succeeded && release_ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

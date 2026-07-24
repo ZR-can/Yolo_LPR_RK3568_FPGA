@@ -3,6 +3,10 @@
 #include <cstdio>
 #include <cstdint>
 
+#if defined(__linux__)
+#include <signal.h>
+#endif
+
 #include <QApplication>
 #include <QAbstractItemView>
 #include <QCloseEvent>
@@ -10,6 +14,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QFileInfo>
 #include <QHeaderView>
 #include <QImage>
 #include <QMainWindow>
@@ -24,9 +29,11 @@
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QThread>
+#include <QTimer>
 
 #include "pcie_demo_bridge.h"
 #include "pcie_qt_ui_helpers.h"
+#include "traffic_pcie_bridge.h"
 #include "ui_mainwindow.h"
 
 Q_DECLARE_METATYPE(PcieUiStatus)
@@ -38,6 +45,48 @@ namespace {
 // letting stale frames pile up behind the live PCIe stream.
 const int kMaxPendingUiFrames = 2;
 
+enum class UiMode {
+    kVideoRecognition = 0,
+    kImageRecognition = 1,
+    kPedestrianViolation = 2,
+};
+
+UiMode UiModeFromIndex(int index) {
+    switch (index) {
+        case 1:
+            return UiMode::kImageRecognition;
+        case 2:
+            return UiMode::kPedestrianViolation;
+        default:
+            return UiMode::kVideoRecognition;
+    }
+}
+
+#if defined(__linux__)
+
+volatile sig_atomic_t g_terminal_stop_signal = 0;
+
+void HandleTerminalStopSignal(int signal_number) {
+    g_terminal_stop_signal = signal_number;
+}
+
+bool InstallTerminalStopHandlers() {
+    struct sigaction action = {};
+    action.sa_handler = HandleTerminalStopSignal;
+    sigemptyset(&action.sa_mask);
+
+    bool installed = true;
+    const int stop_signals[] = {SIGINT, SIGTERM, SIGHUP, SIGTSTP};
+    for (const int signal_number : stop_signals) {
+        if (sigaction(signal_number, &action, nullptr) != 0) {
+            installed = false;
+        }
+    }
+    return installed;
+}
+
+#endif
+
 }  // namespace
 
 class PcieQtWorker : public QThread {
@@ -45,13 +94,19 @@ class PcieQtWorker : public QThread {
 
 public:
     PcieQtWorker(const QString& yolov8_model,
-                 const QString& lprnet7_model,
-                 const QString& lprnet8_model,
+                 const QString& video_ppocr_model,
+                 const QString& image_ppocr_model,
+                 const QString& dictionary,
+                 const QString& traffic_model,
+                 UiMode mode,
                  QObject* parent = nullptr)
         : QThread(parent),
           yolov8_model_(yolov8_model),
-          lprnet7_model_(lprnet7_model),
-          lprnet8_model_(lprnet8_model),
+          video_ppocr_model_(video_ppocr_model),
+          image_ppocr_model_(image_ppocr_model),
+          dictionary_(dictionary),
+          traffic_model_(traffic_model),
+          mode_(mode),
           stop_requested_(false),
           capture_enabled_(true),
           pending_frame_events_(0),
@@ -106,10 +161,22 @@ protected:
             emit StatusReady(status);
         };
 
-        const int ret = RunPcieDemo(yolov8_model_.toLocal8Bit().constData(),
-                                    lprnet7_model_.toLocal8Bit().constData(),
-                                    lprnet8_model_.toLocal8Bit().constData(),
-                                    &callbacks);
+        int ret = -1;
+        if (mode_ == UiMode::kVideoRecognition) {
+            ret = RunPpocrPcieDemo(yolov8_model_.toLocal8Bit().constData(),
+                                   video_ppocr_model_.toLocal8Bit().constData(),
+                                   dictionary_.toLocal8Bit().constData(),
+                                   &callbacks);
+        } else if (mode_ == UiMode::kImageRecognition) {
+            ret = RunPpocrPcieImageDemo(
+                yolov8_model_.toLocal8Bit().constData(),
+                image_ppocr_model_.toLocal8Bit().constData(),
+                dictionary_.toLocal8Bit().constData(),
+                &callbacks);
+        } else if (mode_ == UiMode::kPedestrianViolation) {
+            ret = RunTrafficPcieQtDemo(
+                traffic_model_.toLocal8Bit().constData(), &callbacks);
+        }
 
         PcieUiStatus status;
         status.message = (ret == 0) ? "已停止" : "已停止（异常）";
@@ -128,8 +195,11 @@ private:
     }
 
     QString yolov8_model_;
-    QString lprnet7_model_;
-    QString lprnet8_model_;
+    QString video_ppocr_model_;
+    QString image_ppocr_model_;
+    QString dictionary_;
+    QString traffic_model_;
+    UiMode mode_;
     std::atomic<bool> stop_requested_;
     std::atomic<bool> capture_enabled_;
     std::atomic<int> pending_frame_events_;
@@ -141,15 +211,21 @@ class MainWindow : public QMainWindow {
 
 public:
     MainWindow(const QString& yolov8_model,
-               const QString& lprnet7_model,
-               const QString& lprnet8_model,
+               const QString& video_ppocr_model,
+               const QString& image_ppocr_model,
+               const QString& dictionary,
+               const QString& traffic_model,
                QWidget* parent = nullptr)
         : QMainWindow(parent),
           yolov8_model_(yolov8_model),
-          lprnet7_model_(lprnet7_model),
-          lprnet8_model_(lprnet8_model),
+          video_ppocr_model_(video_ppocr_model),
+          image_ppocr_model_(image_ppocr_model),
+          dictionary_(dictionary),
+          traffic_model_(traffic_model),
           worker_(nullptr),
           capture_enabled_(false),
+          image_result_initialized_(false),
+          image_result_inference_jobs_(0),
           pcie_fps_(0.0),
           display_fps_(0.0),
           inference_fps_(0.0),
@@ -158,13 +234,15 @@ public:
           latest_frame_stride_(0),
           latest_frame_id_(-1),
           ui_painted_frames_(0),
+          ui_statistics_printed_(false),
+          worker_generation_(0),
           last_fps_elapsed_ms_(0),
           last_fps_captured_frames_(0),
           last_fps_ui_painted_frames_(0),
           last_fps_inference_jobs_(0) {
         ui_.setupUi(this);
-        setWindowTitle(pcie_qt_ui::Zh("交通识别系统"));
-        ui_.titleLabel->setText(pcie_qt_ui::Zh("交通识别系统"));
+        setWindowTitle(pcie_qt_ui::Zh("智能交通视觉分析系统"));
+        ui_.titleLabel->setText(pcie_qt_ui::Zh("视频车牌识别"));
         ui_.fpsKeyLabel->setText(pcie_qt_ui::Zh("PCIe采集"));
         ui_.capturedKeyLabel->setText(pcie_qt_ui::Zh("屏幕显示"));
         ui_.inferenceKeyLabel->setText(pcie_qt_ui::Zh("模型推理"));
@@ -172,8 +250,10 @@ public:
         ui_.rootLayout->setStretch(1, 0);
         ui_.videoLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         ui_.modeComboBox->setCurrentIndex(0);
-        ui_.modeBadgeLabel->setText(pcie_qt_ui::ModeBadgeText(pcie_qt_ui::Zh("车牌识别")));
-        ConfigureResultTable();
+        ui_.modeBadgeLabel->setText(
+            pcie_qt_ui::ModeBadgeText(pcie_qt_ui::Zh("视频识别")));
+        ui_.resultGroup->setTitle(pcie_qt_ui::Zh("车牌识别结果"));
+        ConfigureResultTable(UiMode::kVideoRecognition);
         pcie_qt_ui::ApplyTrafficStyle(this);
         connect(ui_.startButton, &QPushButton::clicked, this, &MainWindow::ToggleCapture);
         connect(ui_.saveButton, &QPushButton::clicked, this, &MainWindow::SaveCurrentImage);
@@ -218,9 +298,10 @@ private slots:
             ui_.inferenceValueLabel->setText(pcie_qt_ui::Zh("0.0 FPS"));
         }
         ui_.startButton->setText(capture_enabled_ ? pcie_qt_ui::Zh("暂停")
-                                                  : pcie_qt_ui::Zh("继续"));
+                                                   : pcie_qt_ui::Zh("继续"));
+        ui_.modeComboBox->setEnabled(!capture_enabled_);
         ui_.stateValueLabel->setText(capture_enabled_ ? pcie_qt_ui::Zh("运行中")
-                                                      : pcie_qt_ui::Zh("已暂停"));
+                                                       : pcie_qt_ui::Zh("已暂停"));
         statusBar()->showMessage(capture_enabled_ ? pcie_qt_ui::Zh("正在采集")
                                                   : pcie_qt_ui::Zh("已暂停"));
     }
@@ -260,16 +341,14 @@ private slots:
 
     void OnWorkerFinished(const PcieUiStatus& status) {
         ui_.startButton->setText(pcie_qt_ui::Zh("开始"));
+        ui_.startButton->setEnabled(true);
+        ui_.modeComboBox->setEnabled(true);
         ui_.stateValueLabel->setText(pcie_qt_ui::Zh("空闲"));
         ui_.videoLabel->clear();
         ui_.videoLabel->setText(pcie_qt_ui::Zh("等待图像"));
         ui_.saveButton->setEnabled(latest_frame_pixels_ != nullptr &&
                                    !latest_frame_pixels_->empty());
-        const double elapsed_seconds =
-            std::max(0.001, ui_run_timer_.isValid() ? ui_run_timer_.elapsed() / 1000.0 : 0.001);
-        printf("Qt UI painted: %llu (%.2f fps)\n",
-               (unsigned long long)ui_painted_frames_,
-               ui_painted_frames_ / elapsed_seconds);
+        PrintUiStatistics();
         worker_ = nullptr;
         capture_enabled_ = false;
         if (!status.message.empty()) {
@@ -278,11 +357,38 @@ private slots:
     }
 
     void OnModeChanged(const QString& mode) {
+        if (worker_ != nullptr && worker_->isRunning()) {
+            if (capture_enabled_) {
+                return;
+            }
+            ShutdownWorker();
+            ui_.startButton->setText(pcie_qt_ui::Zh("开始"));
+            ui_.stateValueLabel->setText(pcie_qt_ui::Zh("空闲"));
+        }
+
         ui_.modeBadgeLabel->setText(pcie_qt_ui::ModeBadgeText(mode));
-        if (mode == pcie_qt_ui::Zh("行人模式")) {
-            statusBar()->showMessage(pcie_qt_ui::Zh("行人模式已选择，后续可接入行人模型"));
+        const UiMode selected_mode = CurrentMode();
+        ConfigureResultTable(selected_mode);
+        ResetPreview();
+        if (selected_mode == UiMode::kVideoRecognition) {
+            ui_.titleLabel->setText(pcie_qt_ui::Zh("视频车牌识别"));
+            ui_.resultGroup->setTitle(pcie_qt_ui::Zh("车牌识别结果"));
+            ui_.startButton->setEnabled(true);
+            statusBar()->showMessage(
+                pcie_qt_ui::Zh("视频识别：YOLOv8 + PP-OCR"));
+        } else if (selected_mode == UiMode::kImageRecognition) {
+            ui_.titleLabel->setText(pcie_qt_ui::Zh("图片车牌识别"));
+            ui_.resultGroup->setTitle(pcie_qt_ui::Zh("当前图片识别结果"));
+            ui_.videoLabel->setText(pcie_qt_ui::Zh("等待PCIe静态图片"));
+            ui_.startButton->setEnabled(true);
+            statusBar()->showMessage(
+                pcie_qt_ui::Zh("图片识别：FP16 PP-OCR，单次推理结果"));
         } else {
-            statusBar()->showMessage(pcie_qt_ui::Zh("车牌识别模式"));
+            ui_.titleLabel->setText(pcie_qt_ui::Zh("行人违法检测"));
+            ui_.resultGroup->setTitle(pcie_qt_ui::Zh("违法检测结果"));
+            ui_.startButton->setEnabled(true);
+            statusBar()->showMessage(
+                pcie_qt_ui::Zh("行人违法检测：YOLOv8 Traffic"));
         }
     }
 
@@ -326,13 +432,41 @@ private slots:
     }
 
 private:
-    void ConfigureResultTable() {
-        ui_.resultTableWidget->setColumnCount(3);
-        ui_.resultTableWidget->setHorizontalHeaderLabels(QStringList()
-                                                         << pcie_qt_ui::Zh("车牌")
-                                                         << pcie_qt_ui::Zh("类型")
-                                                         << pcie_qt_ui::Zh("置信度"));
-        ui_.resultTableWidget->setRowCount(0);
+    UiMode CurrentMode() const {
+        return UiModeFromIndex(ui_.modeComboBox->currentIndex());
+    }
+
+    void ConfigureResultTable(UiMode mode) {
+        ui_.resultTableWidget->clear();
+        if (mode == UiMode::kVideoRecognition ||
+            mode == UiMode::kImageRecognition) {
+            ui_.resultTableWidget->setColumnCount(3);
+            ui_.resultTableWidget->setHorizontalHeaderLabels(
+                QStringList() << pcie_qt_ui::Zh("车牌")
+                              << pcie_qt_ui::Zh("类型")
+                              << pcie_qt_ui::Zh("置信度"));
+            ui_.resultTableWidget->setRowCount(0);
+        } else {
+            ui_.resultTableWidget->setColumnCount(3);
+            ui_.resultTableWidget->setHorizontalHeaderLabels(
+                QStringList() << pcie_qt_ui::Zh("项目")
+                              << pcie_qt_ui::Zh("当前")
+                              << pcie_qt_ui::Zh("累计"));
+            const QStringList metrics =
+                QStringList() << pcie_qt_ui::Zh("信号灯")
+                              << pcie_qt_ui::Zh("行人")
+                              << pcie_qt_ui::Zh("斑马线内")
+                              << pcie_qt_ui::Zh("违法");
+            ui_.resultTableWidget->setRowCount(metrics.size());
+            for (int row = 0; row < metrics.size(); ++row) {
+                ui_.resultTableWidget->setItem(
+                    row, 0, new QTableWidgetItem(metrics[row]));
+                ui_.resultTableWidget->setItem(
+                    row, 1, new QTableWidgetItem(pcie_qt_ui::Zh("--")));
+                ui_.resultTableWidget->setItem(
+                    row, 2, new QTableWidgetItem(pcie_qt_ui::Zh("--")));
+            }
+        }
         ui_.resultTableWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
         ui_.resultTableWidget->setSelectionBehavior(QAbstractItemView::SelectRows);
         ui_.resultTableWidget->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -340,37 +474,98 @@ private:
         ui_.resultTableWidget->setShowGrid(false);
         ui_.resultTableWidget->verticalHeader()->setVisible(false);
         ui_.resultTableWidget->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-        ui_.resultTableWidget->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-        ui_.resultTableWidget->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+        for (int column = 1;
+             column < ui_.resultTableWidget->columnCount();
+             ++column) {
+            ui_.resultTableWidget->horizontalHeader()->setSectionResizeMode(
+                column, QHeaderView::ResizeToContents);
+        }
     }
 
-    void StartWorker() {
+    void ResetPreview() {
         known_plates_.clear();
-        pcie_fps_ = 0.0;
-        display_fps_ = 0.0;
-        inference_fps_ = 0.0;
-        ui_painted_frames_ = 0;
-        last_fps_elapsed_ms_ = 0;
-        last_fps_captured_frames_ = 0;
-        last_fps_ui_painted_frames_ = 0;
-        last_fps_inference_jobs_ = 0;
-        ui_.resultTableWidget->setRowCount(0);
-        ui_.videoLabel->clear();
-        ui_.videoLabel->setText(pcie_qt_ui::Zh("等待图像"));
+        image_result_initialized_ = false;
+        image_result_inference_jobs_ = 0;
         latest_frame_pixels_.reset();
         latest_frame_width_ = 0;
         latest_frame_height_ = 0;
         latest_frame_stride_ = 0;
         latest_frame_id_ = -1;
+        ui_.videoLabel->clear();
+        ui_.videoLabel->setText(pcie_qt_ui::Zh("等待图像"));
         ui_.saveButton->setEnabled(false);
+    }
 
-        worker_ = new PcieQtWorker(yolov8_model_, lprnet7_model_, lprnet8_model_, this);
+    void StartWorker() {
+        const UiMode mode = CurrentMode();
+        if (mode == UiMode::kImageRecognition &&
+            !QFileInfo::exists(image_ppocr_model_)) {
+            statusBar()->showMessage(
+                pcie_qt_ui::Zh("图片识别模型不存在：%1").arg(image_ppocr_model_));
+            return;
+        }
+        if (mode == UiMode::kPedestrianViolation &&
+            !QFileInfo::exists(traffic_model_)) {
+            statusBar()->showMessage(
+                pcie_qt_ui::Zh("交通检测模型不存在：%1").arg(traffic_model_));
+            return;
+        }
+
+        pcie_fps_ = 0.0;
+        display_fps_ = 0.0;
+        inference_fps_ = 0.0;
+        ui_painted_frames_ = 0;
+        ui_statistics_printed_ = false;
+        last_fps_elapsed_ms_ = 0;
+        last_fps_captured_frames_ = 0;
+        last_fps_ui_painted_frames_ = 0;
+        last_fps_inference_jobs_ = 0;
+        ConfigureResultTable(mode);
+        ResetPreview();
+
+        worker_ = new PcieQtWorker(yolov8_model_,
+                                   video_ppocr_model_,
+                                   image_ppocr_model_,
+                                   dictionary_,
+                                   traffic_model_,
+                                   mode,
+                                   this);
+        const uint64_t run_generation = ++worker_generation_;
+        PcieQtWorker* const started_worker = worker_;
         capture_enabled_ = true;
-        connect(worker_, &PcieQtWorker::FrameReady, this, &MainWindow::OnFrameReady);
-        connect(worker_, &PcieQtWorker::StatusReady, this, &MainWindow::ApplyStatus);
-        connect(worker_, &PcieQtWorker::WorkerFinished, this, &MainWindow::OnWorkerFinished);
+        connect(worker_,
+                &PcieQtWorker::FrameReady,
+                this,
+                [this, run_generation, started_worker](
+                    const PcieUiFrame& frame, const PcieUiStatus& status) {
+                    if (run_generation == worker_generation_ &&
+                        worker_ == started_worker) {
+                        OnFrameReady(frame, status);
+                    }
+                });
+        connect(worker_,
+                &PcieQtWorker::StatusReady,
+                this,
+                [this, run_generation, started_worker](
+                    const PcieUiStatus& status) {
+                    if (run_generation == worker_generation_ &&
+                        worker_ == started_worker) {
+                        ApplyStatus(status);
+                    }
+                });
+        connect(worker_,
+                &PcieQtWorker::WorkerFinished,
+                this,
+                [this, run_generation, started_worker](
+                    const PcieUiStatus& status) {
+                    if (run_generation == worker_generation_ &&
+                        worker_ == started_worker) {
+                        OnWorkerFinished(status);
+                    }
+                });
         connect(worker_, &QThread::finished, worker_, &QObject::deleteLater);
         ui_.startButton->setText(pcie_qt_ui::Zh("暂停"));
+        ui_.modeComboBox->setEnabled(false);
         statusBar()->showMessage(pcie_qt_ui::Zh("正在启动"));
         ui_run_timer_.restart();
         worker_->start();
@@ -380,10 +575,104 @@ private:
         if (worker_ == nullptr) {
             return;
         }
-        worker_->RequestExit();
-        worker_->wait();
+        PcieQtWorker* const stopping_worker = worker_;
+        ++worker_generation_;
         worker_ = nullptr;
+        stopping_worker->RequestExit();
+        stopping_worker->wait();
+        PrintUiStatistics();
         capture_enabled_ = false;
+    }
+
+    void PrintUiStatistics() {
+        if (ui_statistics_printed_ || !ui_run_timer_.isValid()) {
+            return;
+        }
+        const double elapsed_seconds =
+            std::max(0.001, ui_run_timer_.elapsed() / 1000.0);
+        printf("Qt UI painted: %llu (%.2f fps)\n",
+               (unsigned long long)ui_painted_frames_,
+               ui_painted_frames_ / elapsed_seconds);
+        fflush(stdout);
+        ui_statistics_printed_ = true;
+    }
+
+    void SetResultCellText(int row, int column, const QString& text) {
+        QTableWidgetItem* item = ui_.resultTableWidget->item(row, column);
+        if (item == nullptr) {
+            item = new QTableWidgetItem();
+            ui_.resultTableWidget->setItem(row, column, item);
+        }
+        item->setText(text);
+        item->setTextAlignment(column == 0
+                                   ? Qt::AlignLeft | Qt::AlignVCenter
+                                   : Qt::AlignRight | Qt::AlignVCenter);
+    }
+
+    QString TrafficLightText(const std::string& state) const {
+        if (state == "red") {
+            return pcie_qt_ui::Zh("红灯");
+        }
+        if (state == "green") {
+            return pcie_qt_ui::Zh("绿灯");
+        }
+        return pcie_qt_ui::Zh("未知");
+    }
+
+    void ApplyTrafficResult(const PcieUiStatus& status) {
+        SetResultCellText(
+            0, 1, TrafficLightText(status.traffic_light_state));
+        SetResultCellText(0, 2, pcie_qt_ui::Zh("--"));
+        SetResultCellText(
+            1, 1, QString::number(status.traffic_person_count));
+        SetResultCellText(
+            1, 2, QString::number(status.traffic_person_id_total));
+        SetResultCellText(
+            2, 1, QString::number(status.traffic_persons_in_crosswalk));
+        SetResultCellText(2, 2, pcie_qt_ui::Zh("--"));
+        SetResultCellText(
+            3, 1, QString::number(status.traffic_violation_count));
+        SetResultCellText(
+            3, 2, QString::number(status.traffic_violation_event_total));
+    }
+
+    void InsertPlateResultRow(const PcieUiStatus& status) {
+        const QString plate =
+            QString::fromUtf8(status.plate_text.c_str()).trimmed();
+        if (plate.isEmpty()) {
+            return;
+        }
+        const QString plate_type = status.plate_type.empty()
+                                       ? pcie_qt_ui::Zh("--")
+                                       : QString::fromUtf8(
+                                             status.plate_type.c_str());
+        const int row = ui_.resultTableWidget->rowCount();
+        ui_.resultTableWidget->insertRow(row);
+
+        QTableWidgetItem* plate_item = new QTableWidgetItem(plate);
+        QTableWidgetItem* type_item = new QTableWidgetItem(plate_type);
+        QTableWidgetItem* confidence_item = new QTableWidgetItem(
+            pcie_qt_ui::Zh("%1%").arg(
+                status.plate_confidence * 100.0f, 0, 'f', 1));
+        plate_item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        type_item->setTextAlignment(Qt::AlignCenter);
+        confidence_item->setTextAlignment(
+            Qt::AlignRight | Qt::AlignVCenter);
+
+        ui_.resultTableWidget->setItem(row, 0, plate_item);
+        ui_.resultTableWidget->setItem(row, 1, type_item);
+        ui_.resultTableWidget->setItem(row, 2, confidence_item);
+    }
+
+    void ApplyImagePlateResult(const PcieUiStatus& status) {
+        if (image_result_initialized_ &&
+            status.inference_jobs == image_result_inference_jobs_) {
+            return;
+        }
+        image_result_initialized_ = true;
+        image_result_inference_jobs_ = status.inference_jobs;
+        ui_.resultTableWidget->setRowCount(0);
+        InsertPlateResultRow(status);
     }
 
     void ApplyStatus(const PcieUiStatus& status) {
@@ -427,29 +716,18 @@ private:
         ui_.inferenceValueLabel->setText(pcie_qt_ui::Zh("%1 FPS").arg(inference_fps_, 0, 'f', 1));
         ui_.latencyValueLabel->setText(pcie_qt_ui::Zh("%1 ms").arg(status.avg_end_to_end_ms, 0, 'f', 1));
 
-        if (!status.plate_text.empty()) {
+        if (CurrentMode() == UiMode::kVideoRecognition &&
+            !status.plate_text.empty()) {
             const QString plate = QString::fromUtf8(status.plate_text.c_str()).trimmed();
             if (!plate.isEmpty() && !known_plates_.contains(plate)) {
                 known_plates_.insert(plate);
-                const QString plate_type = status.plate_type.empty()
-                                               ? pcie_qt_ui::Zh("--")
-                                               : QString::fromUtf8(status.plate_type.c_str());
-                const int row = ui_.resultTableWidget->rowCount();
-                ui_.resultTableWidget->insertRow(row);
-
-                QTableWidgetItem* plate_item = new QTableWidgetItem(plate);
-                QTableWidgetItem* type_item = new QTableWidgetItem(plate_type);
-                QTableWidgetItem* confidence_item = new QTableWidgetItem(
-                    pcie_qt_ui::Zh("%1%").arg(status.plate_confidence * 100.0f, 0, 'f', 1));
-                plate_item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-                type_item->setTextAlignment(Qt::AlignCenter);
-                confidence_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
-                ui_.resultTableWidget->setItem(row, 0, plate_item);
-                ui_.resultTableWidget->setItem(row, 1, type_item);
-                ui_.resultTableWidget->setItem(row, 2, confidence_item);
+                InsertPlateResultRow(status);
                 ui_.resultTableWidget->scrollToBottom();
             }
+        } else if (CurrentMode() == UiMode::kImageRecognition) {
+            ApplyImagePlateResult(status);
+        } else if (CurrentMode() == UiMode::kPedestrianViolation) {
+            ApplyTrafficResult(status);
         }
 
         ui_.deviceValueLabel->setText(status.vendor_id == 0
@@ -477,11 +755,15 @@ private:
 
     Ui::MainWindow ui_;
     QString yolov8_model_;
-    QString lprnet7_model_;
-    QString lprnet8_model_;
+    QString video_ppocr_model_;
+    QString image_ppocr_model_;
+    QString dictionary_;
+    QString traffic_model_;
     PcieQtWorker* worker_;
     bool capture_enabled_;
     QSet<QString> known_plates_;
+    bool image_result_initialized_;
+    uint64_t image_result_inference_jobs_;
     double pcie_fps_;
     double display_fps_;
     double inference_fps_;
@@ -492,6 +774,8 @@ private:
     int latest_frame_id_;
     QElapsedTimer ui_run_timer_;
     uint64_t ui_painted_frames_;
+    bool ui_statistics_printed_;
+    uint64_t worker_generation_;
     uint64_t last_fps_elapsed_ms_;
     uint64_t last_fps_captured_frames_;
     uint64_t last_fps_ui_painted_frames_;
@@ -504,16 +788,50 @@ int main(int argc, char** argv) {
     qRegisterMetaType<PcieUiStatus>("PcieUiStatus");
     qRegisterMetaType<PcieUiFrame>("PcieUiFrame");
 
-    if (argc != 4) {
+    if (argc < 4 || argc > 6) {
         fprintf(stderr,
-                "用法: %s <yolov8模型> <7位车牌模型> <8位车牌模型>\n",
+                "用法: %s <车牌yolov8模型> <视频ppocr模型> <字符字典> "
+                "[交通yolov8模型] [图片ppocr模型]\n",
                 argv[0]);
         return 1;
     }
 
+    const QString traffic_model =
+        argc >= 5
+            ? QString::fromLocal8Bit(argv[4])
+            : QDir(QApplication::applicationDirPath())
+                  .filePath("model/traffic/yolov8_traffic_i8.rknn");
+    const QString image_ppocr_model =
+        argc >= 6
+            ? QString::fromLocal8Bit(argv[5])
+            : QDir(QApplication::applicationDirPath())
+                  .filePath(
+                      "model/ppocrv4_rec14_fold_affine_1x1_rk3568_fp16.rknn");
     MainWindow window(QString::fromLocal8Bit(argv[1]),
                       QString::fromLocal8Bit(argv[2]),
-                      QString::fromLocal8Bit(argv[3]));
+                      image_ppocr_model,
+                      QString::fromLocal8Bit(argv[3]),
+                      traffic_model);
+
+#if defined(__linux__)
+    if (!InstallTerminalStopHandlers()) {
+        fprintf(stderr, "Warning: failed to install one or more terminal signal handlers\n");
+    }
+    QTimer terminal_signal_timer;
+    QObject::connect(&terminal_signal_timer, &QTimer::timeout, [&window]() {
+        const int signal_number = g_terminal_stop_signal;
+        if (signal_number == 0) {
+            return;
+        }
+        g_terminal_stop_signal = 0;
+        fprintf(stderr,
+                "\nReceived signal %d; closing Qt UI and printing statistics...\n",
+                signal_number);
+        window.close();
+    });
+    terminal_signal_timer.start(100);
+#endif
+
     window.show();
     return app.exec();
 }

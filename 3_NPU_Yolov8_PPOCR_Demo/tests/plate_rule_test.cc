@@ -94,6 +94,93 @@ int CheckTrackerRawFallback(const char* name,
     return 1;
 }
 
+PipelineResult MakeTrackerDetection(const std::string& plate,
+                                    float confidence) {
+    PipelineResult detection;
+    detection.left = 100;
+    detection.top = 100;
+    detection.right = 200;
+    detection.bottom = 140;
+    detection.confidence = confidence;
+    detection.text_confidence = confidence;
+    detection.plate_name = plate;
+    detection.plate_type = "蓝";
+    return detection;
+}
+
+int CheckTrackerRejectsTransientValidPlate() {
+    SimplePlateTracker tracker;
+    tracker.update(
+        std::vector<PipelineResult>(1, MakeTrackerDetection("京A12345", 0.99f)),
+        0);
+    tracker.update(
+        std::vector<PipelineResult>(1, MakeTrackerDetection("京B12345", 0.90f)),
+        1);
+
+    std::vector<PipelineResult> tracked;
+    tracker.predict(1, tracked);
+    if (tracked.size() != 1U || tracked[0].has_valid_plate_text) {
+        std::fprintf(stderr,
+                     "transient valid plate failed: one-off text entered valid votes\n");
+        return 1;
+    }
+
+    tracker.update(
+        std::vector<PipelineResult>(1, MakeTrackerDetection("京B12345", 0.90f)),
+        2);
+    tracker.predict(2, tracked);
+    const bool confirmed_correct_plate =
+        tracked.size() == 1U &&
+        tracked[0].has_valid_plate_text &&
+        tracked[0].plate_name == "京B12345";
+    if (confirmed_correct_plate) {
+        return 0;
+    }
+    std::fprintf(stderr,
+                 "transient valid plate failed: repeated text was not confirmed\n");
+    return 1;
+}
+
+int CheckSingleInferenceUsesCurrentPlate() {
+    std::vector<PipelineResult> immediate;
+    build_single_inference_plate_results(
+        std::vector<PipelineResult>(
+            1, MakeTrackerDetection("京A12345", 0.99f)),
+        immediate);
+    if (immediate.size() != 1U ||
+        !immediate[0].has_valid_plate_text ||
+        immediate[0].plate_name != "京A12345") {
+        std::fprintf(stderr,
+                     "single inference failed: first plate was not accepted\n");
+        return 1;
+    }
+
+    build_single_inference_plate_results(
+        std::vector<PipelineResult>(
+            1, MakeTrackerDetection("京B12345", 0.90f)),
+        immediate);
+    if (immediate.size() != 1U ||
+        !immediate[0].has_valid_plate_text ||
+        immediate[0].plate_name != "京B12345") {
+        std::fprintf(stderr,
+                     "single inference failed: previous plate was retained\n");
+        return 1;
+    }
+
+    build_single_inference_plate_results(
+        std::vector<PipelineResult>(
+            1, MakeTrackerDetection("京B12X", 0.95f)),
+        immediate);
+    if (immediate.size() != 1U ||
+        immediate[0].has_valid_plate_text ||
+        immediate[0].plate_name != "京B12X") {
+        std::fprintf(stderr,
+                     "single inference failed: invalid current text handling\n");
+        return 1;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -218,6 +305,8 @@ int main() {
     failures += CheckTrackerRawFallback("repeated invalid raw display",
                                        "湘VWUJ3N",
                                        "蓝");
+    failures += CheckTrackerRejectsTransientValidPlate();
+    failures += CheckSingleInferenceUsesCurrentPlate();
     failures += CheckTrackerVote("ordinary sequence O rejected",
                                  "京AA12O3",
                                  "蓝",

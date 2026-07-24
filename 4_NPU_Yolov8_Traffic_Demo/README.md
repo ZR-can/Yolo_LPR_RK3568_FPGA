@@ -1,22 +1,36 @@
 # RK3568 八类交通 YOLOv8 INT8 / PCIe 闯红灯验证 Demo
 
-更新时间：2026-07-22
+更新时间：2026-07-23
+
+项目 5 的 Qt UI 现通过 `RunTrafficPcieQtDemo()` 复用本工程完整的 person/traffic-light 后处理、
+时序跟踪、斑马线规则和 RGBA 叠加层。Qt 模式不初始化或占用 DRM，而是通过共用
+`PcieUiCallbacks` 回传已叠加的 RGBA 帧和实时违法统计；原命令行 PCIe Demo 仍独占 DRM，
+两种入口不会同时启动。为允许车牌与交通 YOLO 后端链接到同一 Qt 可执行文件，本工程的 YOLO
+和后处理公开函数统一增加 `traffic_` 前缀，RKNN 上下文类型独立为
+`traffic_rknn_app_context_t`，算法、阈值与 standalone 调用行为不变。
 
 板端小交通灯实测出现 `red=2～3 green=0` 时，旧版 8 像素门槛会错误输出 `raw=unknown`。当前已将
 最小红/绿有效像素数调为 2，继续保留 1.2 倍颜色优势约束；终端日志新增 `color_active` 表示通过
 饱和度和亮度门槛的颜色有效像素数，原 `active` 仍表示当前违规行人数。
 
-本工程包含两个相互独立的板端程序：
+本工程包含两个相互独立的板端程序，并向项目 5 提供一个 Qt 桥接入口：
 
 - `yolov8_traffic_benchmark`：单图或图片目录检测，用于确认模型结果和 NPU 性能。
 - `yolov8_traffic_pcie_demo`：复用 `3_NPU_Yolov8_PPOCR_Demo` 的 PCIe、固定帧槽和 DRM
   显示链路，实时检测 `person` / `traffic light`，并执行可配置斑马线 ROI 闯红灯规则。
+- `RunTrafficPcieQtDemo()`：复用同一 PCIe、推理、规则和叠加链路，将 RGBA 帧交给项目 5
+  的 Qt 主线程显示，不获取 DRM master。
 - `pc_tools/auto_crosswalk_roi_mask2former.py`：PC 端调用本地 FFmpeg 和 Mapillary Vistas
   Mask2Former，从固定机位视频自动生成稳定的斑马线多边形及板端完整运行命令。
 
-PCIe 版本不依赖 LPRNet、MPP、OpenCV 或 Qt；只包含轻量 person 空间跟踪，不引入 Kalman、ReID
-或车牌文字投票。当前已经完成 Windows 工作区代码迁移、
-规则单元验证和 C++ 静态语法检查，尚需在 Ubuntu 重新交叉编译并在 RK3568 + FPGA 实链路复测。
+PCIe 后端不依赖 LPRNet、MPP、OpenCV 或 Qt；只包含轻量 person 空间跟踪，不引入 Kalman、ReID
+或车牌文字投票。Qt 仅通过无 Qt 类型的回调桥接接收帧。当前已经完成 Windows 工作区代码迁移、
+规则单元验证和 C++ 静态语法检查；新增 Qt 桥接后的 CMake 配置/生成以及交通规则、时序 Tracker、
+叠加层源文件本机编译已通过。RKNN、RGA 和 Linux PCIe 主程序仍需在 Ubuntu 重新交叉编译，并在
+RK3568 + FPGA 实链路复测。
+
+交通 PCIe 信号处理函数会显式保存并忽略 `write()` 返回值，避免 GCC
+`-Wunused-result` 告警；仍只调用异步信号安全的 `write()`，不改变停止和资源回收流程。
 
 ## 1. 模型与类别
 
@@ -98,14 +112,14 @@ FPGA 1280x720 小端 BGR565
 
 ## 4. 斑马线多边形接口
 
-不传 `--roi` 时使用当前验证代码中的默认归一化多边形：
+不传 `--roi` 时使用当前新测试人行道复核后的默认归一化多边形：
 
 ```text
-0.969263,0.721167;
-0.225580,1.000000;
-0.000000,1.000000;
-0.000000,0.842520;
-0.684032,0.691061
+1.000000,0.695622;
+1.000000,0.765115;
+0.000000,0.886727;
+0.000000,0.645587;
+0.661587,0.615705
 ```
 
 板端可用 `--roi` 临时覆盖，至少输入 3 个点，坐标范围必须为 `[0,1]`，点之间用分号分隔：
@@ -246,6 +260,9 @@ PCIe 版本运行前必须确认驱动模块与板端内核兼容。当前复用
 `6.1.99 SMP mod_unload aarch64`，不能用 `insmod -f` 强制加载：
 
 ```bash
+# 切到命令行模式，立刻关闭3568桌面
+sudo systemctl isolate multi-user.target
+
 cd /userdata/rknn_yolov8_traffic_demo/yolov8_traffic_pcie_demo
 export LD_LIBRARY_PATH=../lib:$LD_LIBRARY_PATH
 
@@ -293,9 +310,9 @@ npu_fps=32.128
 - 默认/自定义 ROI 的显示位置和 person 底边判定。
 - DRM 全屏显示、退出资源回收和长时间运行性能。
 - 小目标交通灯的检测稳定性；若 5 帧投票和灯框保持仍不足，再增加固定灯区兜底。
-- PC 端使用公开的 Mapillary Vistas Mask2Former 语义分割模型。使用 CUDA 对 3840×2160
+- PC 端曾使用公开的 Mapillary Vistas Mask2Former 语义分割模型。使用 CUDA 对 3840×2160
   抽样帧实测 8/8 帧均得到目标掩码，
-  5 票像素共识与最大区域凸包生成以下 5 点 ROI：
+  5 票像素共识与最大区域凸包生成以下历史 5 点 ROI：
 
 ```text
 0.969263,0.721167;
@@ -305,5 +322,6 @@ npu_fps=32.128
 0.684032,0.691061
 ```
 
-  结果保存在 `results/mask2former_roi/test5/`，板端使用前应以预览图和实际 person 底边落点复核边界。
+  结果保存在 `results/mask2former_roi/test5/`；当前内置默认值已经改为本节上方的新测试
+  人行道 ROI，不再使用这组历史坐标。板端使用前仍应以实际 person 底边落点复核边界。
   早期零样本方案的权重、字节码及其专用 CLIP Python 依赖已清理。

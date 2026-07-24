@@ -12,8 +12,11 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
 option(DISABLE_RGA "Use CPU image conversion instead of RGA" OFF)
+set(PCIE_DEMO_ROOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/../3_NPU_Yolov8_PPOCR_Demo"
+    CACHE PATH "Path to the reused PCIe/UI bridge backend")
 set(TRAFFIC_3RDPARTY_ROOT
-    "${CMAKE_CURRENT_SOURCE_DIR}/../3_NPU_Yolov8_PPOCR_Demo/3rdparty"
+    "${PCIE_DEMO_ROOT}/3rdparty"
     CACHE PATH "Path to the reused RKNN/RGA/JPEG third-party libraries")
 
 if(NOT TARGET_SOC)
@@ -21,6 +24,9 @@ if(NOT TARGET_SOC)
 endif()
 if(NOT EXISTS "${TRAFFIC_3RDPARTY_ROOT}/CMakeLists.txt")
     message(FATAL_ERROR "Third-party directory not found: ${TRAFFIC_3RDPARTY_ROOT}")
+endif()
+if(NOT EXISTS "${PCIE_DEMO_ROOT}/include/pcie_demo_bridge.h")
+    message(FATAL_ERROR "PCIe UI bridge header not found: ${PCIE_DEMO_ROOT}")
 endif()
 
 add_subdirectory("${TRAFFIC_3RDPARTY_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/thirdparty")
@@ -56,6 +62,7 @@ foreach(TRAFFIC_TARGET yolov8_traffic_benchmark yolov8_traffic_pcie_demo)
     target_include_directories(${TRAFFIC_TARGET} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/utils
+        ${PCIE_DEMO_ROOT}/include
         ${TRAFFIC_3RDPARTY_ROOT}/allocator/drm
         ${LIBRKNNRT_INCLUDES}
         ${LIBRGA_INCLUDES}

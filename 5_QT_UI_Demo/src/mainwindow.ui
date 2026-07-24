@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>交通识别系统</string>
+   <string>智能交通视觉分析系统</string>
   </property>
   <widget class="QWidget" name="centralWidget">
    <layout class="QHBoxLayout" name="rootLayout">
@@ -53,7 +53,7 @@
          <item>
           <widget class="QLabel" name="titleLabel">
            <property name="text">
-            <string>交通识别系统</string>
+            <string>智能交通视觉分析</string>
            </property>
           </widget>
          </item>
@@ -68,10 +68,13 @@
          <item>
           <widget class="QComboBox" name="modeComboBox">
            <item>
-            <property name="text"><string>车牌识别</string></property>
+            <property name="text"><string>视频识别</string></property>
            </item>
            <item>
-            <property name="text"><string>行人模式</string></property>
+            <property name="text"><string>图片识别</string></property>
+           </item>
+           <item>
+            <property name="text"><string>行人违法检测</string></property>
            </item>
           </widget>
          </item>
@@ -80,7 +83,7 @@
        <item>
         <widget class="QLabel" name="modeBadgeLabel">
          <property name="text">
-          <string>当前模式：车牌识别</string>
+          <string>当前模式：视频识别</string>
          </property>
          <property name="alignment">
           <set>Qt::AlignCenter</set>

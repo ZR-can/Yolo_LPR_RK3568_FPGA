@@ -24,7 +24,7 @@
         char *dma_buf_virt_addr;
         int dma_buf_fd;
         int size;
-    }rknn_dma_buf;
+    } traffic_rknn_dma_buf;
 #endif
 
 typedef struct {
@@ -35,7 +35,7 @@ typedef struct {
 #if defined(RV1106_1103) 
     rknn_tensor_mem* input_mems[1];
     rknn_tensor_mem* output_mems[9];
-    rknn_dma_buf img_dma_buf;
+    traffic_rknn_dma_buf img_dma_buf;
 #endif
 #if defined(ZERO_COPY)  
     rknn_tensor_mem* input_mems[1];
@@ -48,17 +48,25 @@ typedef struct {
     int model_height;
     bool is_quant;
     bool person_light_only;
-} rknn_app_context_t;
+} traffic_rknn_app_context_t;
 
 #include "postprocess.h"
 
 
-int init_yolov8_model(const char* model_path, rknn_app_context_t* app_ctx);
+int init_traffic_yolov8_model(const char* model_path,
+                              traffic_rknn_app_context_t* app_ctx);
 
-int release_yolov8_model(rknn_app_context_t* app_ctx);
+int release_traffic_yolov8_model(traffic_rknn_app_context_t* app_ctx);
 
-int inference_yolov8_model(rknn_app_context_t* app_ctx, image_buffer_t* img, object_detect_result_list* od_results);
-int inference_yolov8_model_nolb(rknn_app_context_t* app_ctx, image_buffer_t* img, object_detect_result_list* od_results);
-int inference_yolov8_model_preprocessed(rknn_app_context_t* app_ctx, object_detect_result_list* od_results);
+int inference_traffic_yolov8_model(traffic_rknn_app_context_t* app_ctx,
+                                   image_buffer_t* img,
+                                   object_detect_result_list* od_results);
+int inference_traffic_yolov8_model_nolb(
+    traffic_rknn_app_context_t* app_ctx,
+    image_buffer_t* img,
+    object_detect_result_list* od_results);
+int inference_traffic_yolov8_model_preprocessed(
+    traffic_rknn_app_context_t* app_ctx,
+    object_detect_result_list* od_results);
 
 #endif //_RKNN_DEMO_YOLOV8_H_

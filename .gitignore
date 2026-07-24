@@ -35,8 +35,8 @@ results/
 3_NPU_Yolov8_PPOCR_Demo/model/test*
 3_NPU_Yolov8_PPOCR_Demo/*.log
 3_NPU_Yolov8_PPOCR_Demo/**/*.log
-3_NPU_Yolov8_PPOCR_Demo/qt_pcie_lpr_ui/qmake.tar
-3_NPU_Yolov8_PPOCR_Demo/qt_pcie_lpr_ui/qt-everywhere-src-*.tar*
+5_QT_UI_Demo/qmake.tar
+5_QT_UI_Demo/qt-everywhere-src-*.tar*
 1_PC_Training/datasets/
 1_PC_Training/PaddleOCR/
 1_PC_Training/LPRNet_Pytorch/data
@@ -49,5 +49,9 @@ rknn
 yolo_-lprnet_-pytorch-master
 pcie_720p
 *_accuracy_analysis/
-4_NPU_Yolov8_Traffic_Demo/test/test5.mp4
+4_NPU_Yolov8_Traffic_Demo/test/*.mp4
 tmp/
+testpicture/
+testpicture.zip
+检测结果1.zip
+outputs/

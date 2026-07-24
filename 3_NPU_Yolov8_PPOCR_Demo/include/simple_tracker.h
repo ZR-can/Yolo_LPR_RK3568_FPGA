@@ -88,7 +88,7 @@ struct TrackedPlate {
     unsigned int box_color = 0;
     unsigned int text_color = 0;
 
-    // 全周期得分池 (多数投票机制)
+    // 全周期得分池；同一合法文本连续命中 min_hits_ 次后才允许进入。
     std::map<std::string, float> plate_votes;
 
     // 未通过 GA 36 校验的结果仅用于连续命中后的诊断显示，不进入有效投票池。
@@ -122,5 +122,9 @@ private:
     int min_hits_ = 2;          // 确认为有效目标所需的最少连续命中次数
     float match_threshold_ = 0.35f; // 匹配阈值 (基于归一化 DIoU)
 };
+
+void build_single_inference_plate_results(
+    const std::vector<PipelineResult>& detections,
+    std::vector<PipelineResult>& out_results);
 
 #endif // SIMPLE_TRACKER_H

@@ -4,7 +4,6 @@ project(yolov8_ppocr_demo)
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-option(ENABLE_QT_UI "Build the unchanged Qt PCIe LPR reference UI" OFF)
 
 if (MSVC)
     add_compile_options(/utf-8)
@@ -70,7 +69,6 @@ file(GLOB LPR_MODEL_FILES "${CMAKE_CURRENT_SOURCE_DIR}/model/lprnet*.rknn")
 set(PPOCR_MODEL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn")
 set(PPOCR_DICT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/cblprd_plate_dict.txt")
 set(PPOCR_TEST_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/test_ppocr.jpg")
-set(CHINESE_FONT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/simhei.ttf")
 
 foreach(REQUIRED_FILE
         ${PCIE_DRIVER_MODULE}
@@ -194,39 +192,4 @@ if (BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/utils
     )
     add_test(NAME ppocr_retry_policy_test COMMAND ppocr_retry_policy_test)
-endif()
-
-if (ENABLE_QT_UI)
-    set(CMAKE_AUTOMOC ON)
-    set(CMAKE_AUTOUIC ON)
-    set(CMAKE_AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/src")
-
-    find_package(Qt5 REQUIRED COMPONENTS Widgets)
-
-    set(TARGET_PCIE_QT yolov8_lpr_pcie_qt_ui)
-    add_executable(${TARGET_PCIE_QT}
-        src/main_lpr.cc
-        src/main_pcie_qt.cc
-        src/pcie_qt_ui_helpers.cc
-        src/pcie_qt_ui_helpers.h
-        src/mainwindow.ui
-        src/pcie_frame_source.cc
-        ${PCIE_DISPLAY_SRCS}
-        ${LPR_PIPELINE_SRCS}
-    )
-    configure_pcie_target(${TARGET_PCIE_QT})
-    target_compile_definitions(${TARGET_PCIE_QT} PRIVATE PCIE_QT_UI_BUILD)
-    target_link_libraries(${TARGET_PCIE_QT} Qt5::Widgets m)
-
-    install(TARGETS ${TARGET_PCIE_QT} DESTINATION ${TARGET_PCIE_QT})
-    install(FILES
-        ${YOLO_MODEL_FILE}
-        ${LABEL_FILE}
-        ${LPR_MODEL_FILES}
-        DESTINATION ${TARGET_PCIE_QT}/model
-    )
-    if (EXISTS "${CHINESE_FONT_FILE}")
-        install(FILES ${CHINESE_FONT_FILE} DESTINATION ${TARGET_PCIE_QT}/model)
-    endif()
-    install(FILES ${PCIE_DRIVER_MODULE} DESTINATION ${TARGET_PCIE_QT})
 endif()

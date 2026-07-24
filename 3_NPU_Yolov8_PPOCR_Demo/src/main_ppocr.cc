@@ -47,7 +47,9 @@ void HandleSignal(int) {
     g_should_stop = 1;
     static const char message[] =
         "\nPCIe: stop requested; stopping capture and worker threads\n";
-    (void)write(STDERR_FILENO, message, sizeof(message) - 1);
+    const ssize_t written =
+        write(STDERR_FILENO, message, sizeof(message) - 1);
+    (void)written;
     errno = saved_errno;
 }
 
@@ -205,14 +207,16 @@ struct PcieAppContext {
     bool drm_initialized;
     RgaOverlayRenderer overlay_renderer;
     SimplePlateTracker tracker;
+    bool immediate_plate_results;
     int last_result_frame_id;
     LatestFrameQueue display_queue;
     LatestFrameQueue inference_queue;
     LatestPipelineResult latest_result;
     PciePerformance performance;
 
-    PcieAppContext()
+    explicit PcieAppContext(bool use_immediate_plate_results)
         : drm_initialized(false),
+          immediate_plate_results(use_immediate_plate_results),
           last_result_frame_id(-1),
           display_queue(kDisplayQueueCapacity),
           inference_queue(kInferenceQueueCapacity) {}
@@ -245,13 +249,20 @@ std::vector<PipelineResult> BuildDisplayResults(PcieAppContext* context,
     }
 
     if (result_frame_id >= 0 && result_frame_id != context->last_result_frame_id) {
-        context->tracker.update(current_results, result_frame_id);
+        if (!context->immediate_plate_results) {
+            context->tracker.update(current_results, result_frame_id);
+        }
         context->last_result_frame_id = result_frame_id;
         context->performance.plate_results.fetch_add(current_results.size());
     }
 
     std::vector<PipelineResult> tracked_results;
-    context->tracker.predict(display_frame_id, tracked_results);
+    if (context->immediate_plate_results) {
+        build_single_inference_plate_results(
+            current_results, tracked_results);
+    } else {
+        context->tracker.predict(display_frame_id, tracked_results);
+    }
 
     const float scale_x = (float)display_width / PcieFrameSource::kFrameWidth;
     const float scale_y = (float)display_height / PcieFrameSource::kFrameHeight;
@@ -533,14 +544,16 @@ void PrintPerformance(const PcieAppContext& context, const PcieFrameSource& sour
            (unsigned long long)driver.interrupted_retries,
            (unsigned long long)driver.other_errors);
     printf("==============================================\n");
+    fflush(stdout);
 }
 
 }  // namespace
 
-int RunPpocrPcieDemo(const char* yolov8_model,
-                     const char* ppocr_model,
-                     const char* dictionary,
-                     const PcieUiCallbacks* callbacks) {
+static int RunPpocrPcieDemoInternal(const char* yolov8_model,
+                                    const char* ppocr_model,
+                                    const char* dictionary,
+                                    const PcieUiCallbacks* callbacks,
+                                    bool immediate_plate_results) {
     g_should_stop = 0;
     printf("========================================\n");
     printf("    YOLOv8 PP-OCR PCIe BGR565 Demo      \n");
@@ -556,10 +569,12 @@ int RunPpocrPcieDemo(const char* yolov8_model,
         return -1;
     }
     FramePool frame_pool(kFramePoolCapacity);
-    PcieAppContext context;
+    PcieAppContext context(immediate_plate_results);
     PcieFrameSource source;
 
     printf("========== Initializing Pipeline ==========\n");
+    printf("Plate result mode: %s\n",
+           immediate_plate_results ? "single inference" : "video tracker vote");
     int ret = init_ppocr_pipeline(
         yolov8_model, ppocr_model, dictionary, &context.pipeline);
     if (ret != 0) {
@@ -734,6 +749,22 @@ int RunPpocrPcieDemo(const char* yolov8_model,
     PrintPerformance(context, source, start_ms);
     release_ppocr_pipeline(&context.pipeline);
     return capture_result;
+}
+
+int RunPpocrPcieDemo(const char* yolov8_model,
+                     const char* ppocr_model,
+                     const char* dictionary,
+                     const PcieUiCallbacks* callbacks) {
+    return RunPpocrPcieDemoInternal(
+        yolov8_model, ppocr_model, dictionary, callbacks, false);
+}
+
+int RunPpocrPcieImageDemo(const char* yolov8_model,
+                          const char* ppocr_model,
+                          const char* dictionary,
+                          const PcieUiCallbacks* callbacks) {
+    return RunPpocrPcieDemoInternal(
+        yolov8_model, ppocr_model, dictionary, callbacks, true);
 }
 
 #ifndef PCIE_QT_UI_BUILD
