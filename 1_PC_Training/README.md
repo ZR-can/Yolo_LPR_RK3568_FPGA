@@ -73,6 +73,39 @@ pip install -r requirements.txt
 
 这些脚本用于生成 YOLO 检测数据、LPRNet 识别数据，或把 YOLO 检测结果裁剪成 LPRNet 训练样本。
 
+2026-07-26 增加 `scripts/analyze_yolo_finetune_dataset.py`：在追加特殊车牌并微调
+YOLO 前，逐张核对原 `yolo_format` 与 `特殊车牌` 的图片解码、图片/标签配对、
+YOLO 框格式及边界，并统计类别、尺寸、跨划分同名和完全重复图片。特殊车牌四个
+子目录内的局部 `0=other` 只用于源数据，合并到现有四分类时必须重映射为全局
+`3=other`。
+
+```bash
+cd 1_PC_Training
+python scripts/analyze_yolo_finetune_dataset.py
+```
+
+`scripts/prepare_yolo_finetune_dataset.py` 根据上述审计结果构建独立的
+`datasets/yolo_finetune_special/`，不改写原 `yolo_format`。脚本会：
+
+- 将特殊车牌的局部 `0=other` 重映射为全局 `3=other`；
+- 按四个特殊子类分别做固定种子的 8:1:1 分层划分；
+- 仅在 train 中把新增样本重复为 3 份，借助每轮随机增强缓解 `other` 欠采样；
+- 按 `test > val > train` 排除旧集跨划分的完全重复图片；
+- 合并 IoU 不低于 0.95 的重复框，并在派生标签中裁剪旧集越界框；
+- 使用 NTFS 硬链接复用图片数据块，同时生成 TSV 清单和 JSON 构建摘要。
+
+```bash
+python scripts/prepare_yolo_finetune_dataset.py --dry-run
+python scripts/prepare_yolo_finetune_dataset.py --apply
+```
+
+2026-07-26 实际构建结果：审计 20,219 张旧图和 328 张新增图均可解码且
+图片/标签成对；新增集无格式或越界异常。旧集发现 1 个越界框和 30 组跨划分
+完全重复图，均仅在派生集中修正/排除。派生集 train/val/test 分别为
+13,012/3,826/4,203 张，框数为 14,835/4,246/4,801；`other` 框数分别为
+1,208/40/37。新增 328 张唯一源图按四个子类分层划为 262/33/33 张，train
+中的新增源图重复 3 次，val/test 不重复。
+
 #### CBLPRD-330k 转 PP-OCRv4 单层车牌数据集
 
 `scripts/process_PPOCRv4_cblprd.py` 按原始 `train.txt` 和 `val.txt` 划分，只保留以下类别：
@@ -239,14 +272,46 @@ python scripts/build_cblprd_board_eval_archive.py
 
 ```bash
 cd 1_PC_Training/scripts
-python train_yolo.py --config ../configs/yolo_config.yaml
+python train_yolo.py
 ```
 
 说明：
 
 - 默认入口脚本为 `train_yolo.py`
-- 默认配置文件为 `../configs/yolo_config.yaml`
-- 训练结果通常保存在脚本指定的 `runs/` 或输出目录中
+- `configs/yolo_config.yaml` 只描述当前特殊车牌派生数据集；
+  `configs/yolo_config_baseline.yaml` 固定微调前原数据集。
+- `configs/yolo_finetune_train.yaml` 独立维护训练超参数，默认使用 640 输入、
+  batch 16、AdamW、`lr0=2e-4`、30 epochs、10 epochs patience、AMP 和余弦退火。
+- 默认从旧训练 `weights/best.pt` 开始一次新微调，明确使用 `resume=false`；
+  只有恢复本次中断的微调任务时才传
+  `--resume-checkpoint path/to/last.pt`。
+- 训练结果保存在
+  `scripts/runs/finetune_results/yolov8n_special_other_20260726/`，
+  训练后自动用 `best.pt` 评估 test split 并生成 `training_summary.json`。
+- 当前数据约 6.2 GB、主机可用内存不足以安全做 RAM cache，训练配置固定
+  `cache=false`。
+
+训练前后可用相同入口保存逐类 val/test 指标；评估不设置高置信度门限，以保留
+完整 PR 曲线：
+
+```bash
+python evaluate_yolo_finetune.py --split val --name before_finetune_val
+python evaluate_yolo_finetune.py --split test --name before_finetune_test
+python evaluate_yolo_finetune.py --model path/to/best.pt --split test --name after_finetune_test
+```
+
+2026-07-26 微调前固定基线（旧 `best.pt`，新派生集）：val 总体
+mAP50/mAP50-95 为 0.9207/0.7718，`other` recall/AP50/AP50-95 为
+0.5250/0.7151/0.5567；test 总体为 0.9099/0.7735，`other` 为
+0.5105/0.7209/0.5812。训练后的模型必须同时比较 `other` 提升和
+blue/green/yellow_single 三个核心类是否回退。
+
+2026-07-26 微调完成：30 epochs，最佳为 epoch 23。新 `best.pt` 在固定 test
+上的总体 mAP50/mAP50-95 为 0.9828/0.8520；`other`
+recall/AP50/AP50-95 为 0.9189/0.9676/0.8601。blue、green、
+yellow_single 的 AP50-95 相对旧模型变化为 +0.0053/-0.0007/+0.0305，
+满足采用条件。完整数据审计、配置依据、训练过程、哈希和逐类对比见
+`YOLO_FINETUNE_RECORD_20260726.md`。
 
 ### 3. PaddleOCR 官方训练框架
 

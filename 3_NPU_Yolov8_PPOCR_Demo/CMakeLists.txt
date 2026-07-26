@@ -55,6 +55,7 @@ set(LPR_PIPELINE_SRCS
 set(PPOCR_PIPELINE_SRCS
     src/ppocr_rec.cc
     src/ppocr_retry_policy.cc
+    src/static_image_change_detector.cc
     src/yolo_ppocr_pipeline.cc
 )
 
@@ -182,6 +183,17 @@ if (BUILD_TESTING)
     )
     add_test(NAME plate_rule_test COMMAND plate_rule_test)
 
+    add_executable(simple_tracker_motion_test
+        tests/simple_tracker_motion_test.cc
+        src/plate_rule.cc
+        src/simple_tracker.cc
+    )
+    target_include_directories(simple_tracker_motion_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    add_test(NAME simple_tracker_motion_test
+             COMMAND simple_tracker_motion_test)
+
     add_executable(ppocr_retry_policy_test
         tests/ppocr_retry_policy_test.cc
         src/ppocr_retry_policy.cc
@@ -192,4 +204,14 @@ if (BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/utils
     )
     add_test(NAME ppocr_retry_policy_test COMMAND ppocr_retry_policy_test)
+
+    add_executable(static_image_change_detector_test
+        tests/static_image_change_detector_test.cc
+        src/static_image_change_detector.cc
+    )
+    target_include_directories(static_image_change_detector_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    add_test(NAME static_image_change_detector_test
+             COMMAND static_image_change_detector_test)
 endif()

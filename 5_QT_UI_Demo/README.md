@@ -5,14 +5,47 @@
 本目录承载 RK3568 + FPGA PCIe 智能交通 Qt 5 界面，提供三种可选模式：
 
 - `视频识别`：当前生产链路，使用 YOLOv8 + PP-OCRv4 识别车牌。
-- `图片识别`：读取 FPGA/PCIe 输入的静态画面，使用 FP16 PP-OCR，并直接显示最近一次独立
-  推理结果，不经过视频 Tracker 的连续命中和累计投票。
-- `行人违法检测`：接入项目 4 的 person/traffic-light 检测、灯色投票、斑马线 ROI 和
+- `图片识别`：读取 FPGA/PCIe 输入的静态画面，使用 FP16 PP-OCR；每次换图先隔离上一图片
+  generation，再复用视频 Tracker 的连续 2 次确认与合法投票。
+- `行人违法检测`：接入项目 4 的 person 检测、固定交通灯 ROI 取色、灯色投票、斑马线 ROI 和
   闯红灯事件去重链路。
 
 Qt 目标直接复用第 3 阶段的 `main_ppocr.cc`、PCIe 采集、YOLO 检测、PP-OCR 识别、车牌规则、
 Tracker 和 RGA 叠加代码，同时复用第 4 阶段的交通后处理、时序 Tracker、违法规则和叠加层。
+视频识别的共享车牌 Tracker 已加入高速首联尺寸门、真实观测速度、受限加速度和最多 8 帧
+短检测空窗预测，用于补偿约 2–4 帧异步推理延迟；该变化只作用于项目 3/项目 5 的车牌
+跟踪，不改变行人违法检测 Tracker。
 当前仍需在 Ubuntu 20.04 交叉编译，并在 RK3568 + FPGA 实链路复测。
+
+## 微调模型独立 Demo
+
+默认 demo 与微调 demo 由同一次构建生成，复用完全相同的 C/C++ 源文件、界面、PP-OCR
+模型、Tracker 和后处理逻辑，只隔离车牌 YOLO RKNN、安装目录与启动脚本：
+
+| 项目 | 默认 demo | 微调 demo |
+|---|---|---|
+| 安装目录 | `yolov8_ppocr_pcie_qt_ui/` | `yolov8_ppocr_pcie_qt_ui_finetune_demo/` |
+| 可执行文件 | `yolov8_ppocr_pcie_qt_ui` | `yolov8_ppocr_pcie_qt_ui` |
+| 一键脚本 | `run-qt-demo.sh` | `run-finetune-demo.sh` |
+| 车牌 YOLO 源模型 | 项目 3 的 `model/yolov8.rknn` | 项目 3 的 `model/finetune_i8.rknn` |
+| 运行时模型名 | `model/yolov8.rknn` | `model/yolov8.rknn` |
+| `BOX_THRESH` | `0.55` | `0.55` |
+
+微调模型从
+`../2_Model_Conversion_PC_Simulation/yolov8/model/finetune_i8.rknn`
+复制到 `../3_NPU_Yolov8_PPOCR_Demo/model/finetune_i8.rknn`，两份文件大小均为
+`4,634,120` 字节，SHA-256 均为
+`E11C5A8E69C34EC2FC3DA45C81A070EECC88D177EE75374830D861DCF19CA30F`。
+原 `model/yolov8.rknn` 不会被覆盖。
+
+两个模式入口都从可执行文件所在目录加载同一个
+`model/yolov8.rknn`：`RunPpocrPcieDemo()` 用于视频模式，
+`RunPpocrPcieImageDemo()` 用于图片模式。因此微调安装目录中的图片、视频模式都会使用
+微调 RKNN，不会回退到默认模型。
+
+微调训练的 F1-confidence 曲线峰值分别约为 val `0.676`、固定 test `0.602`；
+按兼容优先的部署决定，微调 demo 保持已经用于 PT/ONNX 一致性检查的 `conf=0.55`，
+不引入阈值差异。曲线峰值只作为后续板端 A/B 调参依据。
 
 ## 开发记录
 
@@ -28,10 +61,10 @@ FPGA PCIe BGR565 1280×720 -> PcieFrameSource
     │    -> GA 36 规则、投票与车牌 Tracker
     ├─ 图片识别
     │    -> YOLOv8 车牌检测 -> FP16 PP-OCRv4
-    │    -> GA 36 规则、单次推理结果（无 Tracker 投票）
+    │    -> 静态图片 generation -> GA 36 规则、连续 2 次确认与投票
     └─ 行人违法检测
-         -> YOLOv8 person / traffic light
-         -> 灯色投票、person Tracker、斑马线 ROI 与违法去重
+         -> YOLOv8 person + 固定交通灯 ROI 直接取色
+         -> 红绿灯色投票、person Tracker、斑马线 ROI 与违法去重
     -> RGA 转 RGBA8888 并叠加
     -> Qt 主线程显示、状态统计、模式化结果表
 ```
@@ -51,6 +84,8 @@ Qt 队列最多保留 2 个待绘制事件；界面落后时主动丢弃旧帧�
 │       └── simhei.ttf
 ├── CMakeLists.txt
 ├── build-linux.sh
+├── run-finetune-demo.sh
+├── run-qt-demo.sh
 ├── README.md
 ├── DEVELOPMENT_RECORD.md
 ├── include/
@@ -136,8 +171,9 @@ install/rk356x_linux_aarch64/rknn_yolov8_ppocr_qt_ui_demo/
 ├── lib/
 │   ├── librga.so
 │   └── librknnrt.so
-└── yolov8_ppocr_pcie_qt_ui/
+├── yolov8_ppocr_pcie_qt_ui/
     ├── yolov8_ppocr_pcie_qt_ui
+    ├── run-qt-demo.sh
     ├── pango_pci_driver.ko
     ├── assets/
     │   └── fonts/
@@ -150,7 +186,24 @@ install/rk356x_linux_aarch64/rknn_yolov8_ppocr_qt_ui_demo/
         ├── cblprd_plate_dict.txt
         └── traffic/
             ├── yolov8_traffic_i8.rknn
-            └── labels_list.txt
+            ├── labels_list.txt
+            └── traffic_roi.conf
+└── yolov8_ppocr_pcie_qt_ui_finetune_demo/
+    ├── yolov8_ppocr_pcie_qt_ui
+    ├── run-finetune-demo.sh
+    ├── run-qt-demo.sh
+    ├── pango_pci_driver.ko
+    ├── assets/fonts/simhei.ttf
+    └── model/
+        ├── yolov8.rknn
+        ├── labels_list.txt
+        ├── ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn
+        ├── ppocrv4_rec14_fold_affine_1x1_rk3568_fp16.rknn
+        ├── cblprd_plate_dict.txt
+        └── traffic/
+            ├── yolov8_traffic_i8.rknn
+            ├── labels_list.txt
+            └── traffic_roi.conf
 ```
 
 ## 推送到 RK3568
@@ -175,6 +228,7 @@ adb push \
 ```bash
 adb shell ls -lh \
   /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui/yolov8_ppocr_pcie_qt_ui \
+  /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui/run-qt-demo.sh \
   /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui/model/yolov8.rknn \
   /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui/model/ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn \
   /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui/model/ppocrv4_rec14_fold_affine_1x1_rk3568_fp16.rknn \
@@ -186,54 +240,78 @@ adb shell ls -lh \
 ## 板端运行
 
 Qt 界面使用已验证的 X11/xcb 路径。不要像 DRM 命令行 Demo 那样切换到
-`multi-user.target`；Qt 运行前需要图形桌面和 Xorg。
+`multi-user.target`；Qt 运行前需要图形桌面和 Xorg。一键脚本会切换到
+`graphical.target`、等待 X11、检查 LightDM/Xorg、重载 PCIe 驱动、设置 Qt/RKNN/动态库环境。
+当前大屏布局要求 HDMI 原生输出 `1920×1080@60Hz`。一键脚本会选择并回读该时序，再以全屏
+方式启动 Demo：
 
 ```bash
 adb shell
-systemctl isolate graphical.target
-
-ls -l /tmp/.X11-unix
-ps -ef | grep -Ei 'Xorg|lightdm' | grep -v grep
-
 cd /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui
-chmod +x ./yolov8_ppocr_pcie_qt_ui
-
-if lsmod | grep -q '^pango_pci_driver '; then
-    rmmod pango_pci_driver
-fi
-insmod ./pango_pci_driver.ko
-ls -l /dev/pango_pci_driver
-
-export DISPLAY=:0
-export XAUTHORITY=/var/run/lightdm/root/:0
-export QT_QPA_PLATFORM=xcb
-export RKNN_LOG_LEVEL=0
-export LD_LIBRARY_PATH=/userdata/rknn_yolov8_ppocr_qt_ui_demo/lib:$LD_LIBRARY_PATH
-
-./yolov8_ppocr_pcie_qt_ui \
-  ./model/yolov8.rknn \
-  ./model/ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn \
-  ./model/cblprd_plate_dict.txt
+chmod +x ./run-qt-demo.sh
+./run-qt-demo.sh
 ```
 
-默认从程序目录加载 `model/traffic/yolov8_traffic_i8.rknn` 和
-`model/ppocrv4_rec14_fold_affine_1x1_rk3568_fp16.rknn`。如需同时覆盖，可依次追加交通模型和
-图片 PP-OCR 模型：
+微调版使用独立目录和一键脚本：
 
 ```bash
-./yolov8_ppocr_pcie_qt_ui \
-  ./model/yolov8.rknn \
-  ./model/ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn \
-  ./model/cblprd_plate_dict.txt \
-  /absolute/path/to/yolov8_traffic_i8.rknn \
-  /absolute/path/to/ppocrv4_rec14_fold_affine_1x1_rk3568_fp16.rknn
+adb shell
+cd /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui_finetune_demo
+chmod +x ./run-finetune-demo.sh
+./run-finetune-demo.sh
 ```
+
+显示器已经处于目标模式时会输出：
+
+```text
+Display output HDMI-...: keeping native 1920x1080.
+```
+
+整屏按原生 1920×1080 逻辑像素划分：左上是固定 1280×720 视频，左下是 1280×360
+运行/PCIe 状态，右侧是 640×1080 模式、结果、运行提示和控制区。视频逐帧不做 Qt 缩放，
+右侧和下方 UI 则直接按 1080p 原生分辨率绘制，因此视频内叠加文字和 UI 字体都避免二次插值。
+Qt 自动高 DPI 缩放仍被关闭，逻辑缩放固定为 1。
+
+如果 `xrandr` 缺失、找不到 HDMI 或显示器未声明 1920×1080，脚本会明确报错并停止，避免
+1920×1080 固定界面在较小输出模式下被裁切或只显示局部区域。可在另一个 ADB 终端核对活动时序：
+
+```bash
+export DISPLAY=:0
+export XAUTHORITY=/var/run/lightdm/root/:0
+xrandr --current
+```
+
+程序不再接收模型和字典路径；车牌 YOLOv8、视频 H2 PP-OCR、图片 FP16 PP-OCR、字符字典以及
+交通 YOLOv8 均固定从可执行文件旁的 `model/` 目录加载。行人模式默认读取
+`model/traffic/traffic_roi.conf`，其中同时保存归一化斑马线多边形和固定主交通灯矩形。
+一键脚本会原样转发 `--roi-config`、`--roi` 和 `--light-roi`；后两项可以分别覆盖配置中的
+对应区域，不要求成对传入：
+
+```bash
+./run-qt-demo.sh \
+  --roi "0.08,0.62;0.90,0.58;0.96,0.91;0.03,0.88"
+
+./run-qt-demo.sh \
+  --roi-config /userdata/custom/traffic_roi.conf \
+  --light-roi "0.547917,0.235185,0.581250,0.339815"
+```
+
+斑马线 ROI 至少包含 3 个点；主灯 ROI 格式为 `left,top,right,bottom` 且边界必须递增。所有
+坐标均位于 `[0,1]`，格式错误会在打开 Qt 和加载驱动前退出。两类 ROI 可由项目 4 的
+`pc_tools/auto_crosswalk_roi_mask2former.py` 从固定机位视频共同生成；必须先检查候选预览中的
+`MAIN` 标记，必要时使用 `--main-light-index` 重新选择，然后将输出的 `traffic_roi.conf`
+替换到部署目录。优先级为“内置安全值 < 默认/指定配置文件 < 命令行单项覆盖”。交通后端始终
+直接读取最终固定灯区，不再生成或选择 YOLO 交通灯框；界面仅对灯框四条边加入不超过宽高 5%
+的伪随机显示扰动，并显示 `75%～95%` 的伪随机展示置信度，两者均不参与取色。斑马线输入多边形
+会在板端围绕顶点中心内缩 3%，违法规则恢复为“稳定红灯且 person 位于内缩后 ROI 内立即判定”。
 
 程序启动后先选择模式，再点击“开始”进入 PCIe 采集和识别；采集运行时模式下拉框锁定，点击
 “暂停”后开放模式选择。暂停后不改变模式并点击“继续”，会复用当前工作线程、模型和 PCIe
 文件描述符；若改选其他模式，则先完整结束并释放旧后端，再等待用户点击“开始”启动新后端。
-图片识别模式与视频模式使用同一 PCIe 静态画面输入，不提供本地文件选择器；每次推理完成后
-当前结果表会替换为本次合法车牌，不保留上一张图片的投票结果。关闭窗口，或在启动程序的
+图片识别模式与视频模式使用同一 PCIe 静态画面输入，不提供本地文件选择器。后端会检测原始
+BGR565 静态画面变化：换图后立即清空上一张图片的结果和投票，仅接收新图片 generation 的
+推理结果；新车牌连续 2 次独立推理文本一致并通过 GA 36 校验后，当前结果表才显示该车牌。
+关闭窗口，或在启动程序的
 ADB 终端按
 `Ctrl+C` / `Ctrl+Z`，都会请求线程退出并完整释放资源。
 
@@ -265,11 +343,20 @@ kill -TERM $(pidof yolov8_ppocr_pcie_qt_ui)
   点击“开始”。
 - 视频识别叠加车牌框、类型和识别文本；行人违法检测叠加斑马线 ROI、信号灯、person ID
   和违法状态。
-- 图片识别使用 FP16 PP-OCR；当前图片的新推理完成后，框中文字和结果表直接切换到本次结果，
-  不等待连续 2 次命中，也不累加上一张图片的投票分数。
+- 图片识别使用 FP16 PP-OCR；同一静态图片复用视频模式的连续 2 次相同文本确认和合法结果投票，
+  过滤单次 OCR 错误。检测到换图时立即清空上一张图片的 Tracker/投票和结果表，不累加跨图片
+  分数，也不把上一图片尚未完成的异步推理叠加到新图。
+- 图片模式首次收到静态画面及每次检测到换图时，终端输出
+  `Static image generation: N (frame=M)`。同一图片期间 generation 应保持不变；切换到稳定新图
+  后只应递增一次。如果同一图片仍连续递增，说明输入画面抖动超过当前块均值抗噪门槛，需要保存
+  原始 BGR565 帧并据实调整阈值，不能继续依赖连续命中结果。
+- 图片模式退出时性能汇总额外输出
+  `Average static image change detection: X.XXX ms`。该值用于隔离换图检测本身的同步采集开销；
+  优化后的 `16` 像素步长、`2×2` 块采样每帧只读取约 14,400 像素。
 - 右侧显示 PCIe 采集 FPS、Qt 绘制 FPS、推理 FPS、端到端延迟。
 - 识别结果表只显示连续 2 次独立推理观测一致且通过 GA 36 校验的车牌、车牌类型和
-  PP-OCR 文本置信度；画面中单次偶发的候选文字不会进入结果表。
+  PP-OCR 文本置信度；图片模式会逐行显示当前图片的全部有效跟踪结果，并在检测到新图片的
+  首个显示帧时立即清除上一张图片的全部结果。视频与图片模式都不会把单次偶发候选写入结果表。
 - 行人违法检测结果表显示稳定灯色、当前/累计行人、斑马线内人数和当前/累计违法人数。
 - PCIe 状态显示 vendor/device、链路代际/宽度和最大负载。
 - 关闭窗口或使用受支持的终端退出信号后，终端打印 `PCIe Pipeline Statistics` 和
@@ -385,6 +472,19 @@ cma_alloc: reserved: alloc failed, req-size: 1024 pages, ret: -12
 `kInferenceInterval=2` 每两帧调度一次，因此在 28.10 FPS 输入下理论调度上限约为
 14.05 FPS。若要提高“模型推理”读数，应先调整推理间隔并确认单次 pipeline 仍能跟上输入，
 不应通过减少 Qt 刷新率解决。
+
+Qt 预览固定为 1280×720，输入帧通过 `QPixmap::fromImage()` 直接提交，不执行逐帧缩小或
+上采样；视频区域不会被右侧面板覆盖。启动后可从
+`Qt preview: source=... viewport=... output=... scaling=disabled` 核对三者均为 1280×720，
+退出时的 `Average Qt frame prepare/handoff` 用于比较不同显示器下的 Qt 帧准备开销。
+
+左下状态区的上半部紧凑显示运行状态和 PCIe 状态，下半部显示最近60秒的 CPU 温度、NPU负载
+和内存占用。监控控件每秒采样一次，只用 Qt `QPainter` 绘制三组细柱，不依赖 Qt Charts、
+OpenGL 或外部命令。CPU/NPU 对应的 sysfs 节点不可读时显示 `--`，不会阻止视频识别运行。
+
+右侧运行提示以Qt采集开关为唯一主状态：运行时固定显示“正在采集”，暂停时固定显示
+“等待PCIe帧数据”。驱动在帧间返回的正常等待/重试文本不会覆盖主状态；保存结果会显示2秒，
+然后恢复当前运行或暂停提示。
 
 ### 性能统计与 PP-OCR 重试含义
 

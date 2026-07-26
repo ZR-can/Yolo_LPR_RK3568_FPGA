@@ -6,13 +6,12 @@
 namespace {
 
 constexpr int kLightVoteWindow = 5;
-constexpr int kLightMajorityVotes = 3;
-constexpr int kLightStateHoldVotes = 2;
-constexpr int kLightBoxHoldFrames = 5;
-constexpr int kPersonMaxMissedFrames = 8;
-constexpr float kPersonBoxSmoothing = 0.65f;
+constexpr int kLightAcquireVotes = 3;
+constexpr int kLightSwitchVotes = 4;
+constexpr int kPersonMaxMissedFrames = 2;
+constexpr float kPersonBoxSmoothing = 0.90f;
 constexpr float kMinimumMatchIou = 0.05f;
-constexpr float kMaximumCenterDistance = 0.75f;
+constexpr float kMaximumCenterDistance = 1.25f;
 
 int Clamp(int value, int low, int high) {
     return std::max(low, std::min(value, high));
@@ -93,9 +92,6 @@ void TrafficTemporalTracker::Reset() {
     person_tracks_.clear();
     light_votes_.clear();
     stable_light_ = TRAFFIC_LIGHT_UNKNOWN;
-    cached_light_ = TrafficDetectionState();
-    has_cached_light_ = false;
-    cached_light_missed_frames_ = 0;
     next_track_id_ = 1;
     violation_event_total_ = 0;
 }
@@ -116,17 +112,18 @@ TrafficLightState TrafficTemporalTracker::UpdateLightVote(TrafficLightState inst
         }
     }
 
-    if (red_votes >= kLightMajorityVotes && red_votes > green_votes) {
-        stable_light_ = TRAFFIC_LIGHT_RED;
-    } else if (green_votes >= kLightMajorityVotes && green_votes > red_votes) {
-        stable_light_ = TRAFFIC_LIGHT_GREEN;
-    } else {
-        const int stable_votes = stable_light_ == TRAFFIC_LIGHT_RED
-                                     ? red_votes
-                                     : (stable_light_ == TRAFFIC_LIGHT_GREEN ? green_votes : 0);
-        if (stable_votes < kLightStateHoldVotes) {
-            stable_light_ = TRAFFIC_LIGHT_UNKNOWN;
+    if (stable_light_ == TRAFFIC_LIGHT_UNKNOWN) {
+        if (red_votes >= kLightAcquireVotes && red_votes > green_votes) {
+            stable_light_ = TRAFFIC_LIGHT_RED;
+        } else if (green_votes >= kLightAcquireVotes && green_votes > red_votes) {
+            stable_light_ = TRAFFIC_LIGHT_GREEN;
         }
+    } else if (stable_light_ == TRAFFIC_LIGHT_RED) {
+        if (green_votes >= kLightSwitchVotes) {
+            stable_light_ = TRAFFIC_LIGHT_GREEN;
+        }
+    } else if (red_votes >= kLightSwitchVotes) {
+        stable_light_ = TRAFFIC_LIGHT_RED;
     }
     return stable_light_;
 }
@@ -143,38 +140,10 @@ int TrafficTemporalTracker::Update(const TrafficFrameAnalysis& instant,
     next.light.state = UpdateLightVote(instant.light.instant_state);
     next.detections.clear();
     next.person_count = 0;
-    next.traffic_light_count = instant.traffic_light_count;
     next.persons_in_crosswalk = 0;
     next.violation_count = 0;
     next.violation_event_count = 0;
     next.violation_event_total = violation_event_total_;
-
-    bool current_selected_light = false;
-    for (const TrafficDetectionState& detection : instant.detections) {
-        if (detection.detection.cls_id != kTrafficLightClassId) {
-            continue;
-        }
-        TrafficDetectionState current = detection;
-        current.predicted = false;
-        next.detections.push_back(current);
-        if (current.selected_light) {
-            cached_light_ = current;
-            has_cached_light_ = true;
-            cached_light_missed_frames_ = 0;
-            current_selected_light = true;
-        }
-    }
-    if (!current_selected_light && has_cached_light_) {
-        ++cached_light_missed_frames_;
-        if (cached_light_missed_frames_ <= kLightBoxHoldFrames) {
-            TrafficDetectionState held_light = cached_light_;
-            held_light.predicted = true;
-            held_light.selected_light = true;
-            next.detections.push_back(held_light);
-        } else {
-            has_cached_light_ = false;
-        }
-    }
 
     std::vector<object_detect_result> persons;
     for (const TrafficDetectionState& detection : instant.detections) {

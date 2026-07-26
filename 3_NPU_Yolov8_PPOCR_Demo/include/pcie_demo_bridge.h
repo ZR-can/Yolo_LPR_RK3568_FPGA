@@ -15,6 +15,12 @@ struct PcieUiFrame {
     int frame_id = -1;
 };
 
+struct PcieUiPlateResult {
+    std::string plate_text;
+    std::string plate_type;
+    float plate_confidence = 0.0f;
+};
+
 struct PcieUiStatus {
     bool worker_alive = false;
     bool capturing = false;
@@ -29,6 +35,7 @@ struct PcieUiStatus {
     uint64_t frame_pool_drops = 0;
     uint64_t display_queue_drops = 0;
     uint64_t inference_queue_drops = 0;
+    uint64_t image_generation = 0;
     double avg_end_to_end_ms = 0.0;
     unsigned int vendor_id = 0;
     unsigned int device_id = 0;
@@ -38,6 +45,7 @@ struct PcieUiStatus {
     std::string plate_text;
     std::string plate_type;
     float plate_confidence = 0.0f;
+    std::vector<PcieUiPlateResult> image_plate_results;
     std::string traffic_light_state;
     int traffic_person_count = 0;
     int traffic_person_id_total = 0;

@@ -68,7 +68,7 @@
 struct TrackedPlate {
     int id = -1;
     int time_since_update = 0; 
-    int hit_streak = 0; // 连续命中次数，用于过滤突发噪点
+    int hit_streak = 0; // 关联命中次数，用于过滤突发噪点
     
     // 运动学状态 (中心点及宽高)
     float cx = 0.0f;
@@ -81,6 +81,23 @@ struct TrackedPlate {
     float vy = 0.0f;
     float vw = 0.0f;
     float vh = 0.0f;
+
+    // 加速度状态，用于补偿车辆接近镜头时的透视加速。
+    float ax = 0.0f;
+    float ay = 0.0f;
+    float aw = 0.0f;
+    float ah = 0.0f;
+
+    // 最近一次真实检测观测；空检测帧不得改变该时间基准。
+    int last_observation_frame_id = -1;
+    float observed_cx = 0.0f;
+    float observed_cy = 0.0f;
+    float observed_w = 0.0f;
+    float observed_h = 0.0f;
+    float observed_vx = 0.0f;
+    float observed_vy = 0.0f;
+    float observed_vw = 0.0f;
+    float observed_vh = 0.0f;
     
     float confidence = 0.0f; 
     float text_confidence = 0.0f; 
@@ -107,24 +124,32 @@ private:
     bool is_valid_plate(const std::string& plate, const std::string& plate_type) const;
     std::string get_best_voted_plate(const std::map<std::string, float>& votes) const;
     
-    // 替换为 DIoU 相似度，天然解决快速移动物体 IoU 为 0 的匹配问题
+    // DIoU 常规关联，以及仅面向未确认且尺寸相近轨迹的高速首联保护。
     float compute_similarity(const TrackedPlate& track, const PipelineResult& det) const;
+    bool is_fast_motion_initial_match(const TrackedPlate& track,
+                                      const PipelineResult& det,
+                                      float similarity) const;
+    void advance_motion_state(TrackedPlate* track, int dt) const;
+    void update_motion_from_observation(TrackedPlate* track,
+                                        const PipelineResult& det,
+                                        int frame_id) const;
+    void clamp_acceleration(TrackedPlate* track) const;
 
     std::vector<TrackedPlate> tracks_;
     int next_id_ = 0;
     int last_frame_id_ = -1;
     
-    // Alpha-Beta 滤波器参数 (稳态卡尔曼)
-    float alpha_ = 0.70f;  // 位置更新增益
-    float beta_  = 0.40f;  // 速度更新增益
+    // 真实观测速度 + 受限加速度滤波参数。
+    float position_gain_ = 0.90f;
+    float velocity_gain_ = 0.80f;
+    float acceleration_gain_ = 0.35f;
+    float acceleration_limit_ratio_ = 0.12f;
     
-    int max_age_frames_ = 5;    // 允许的最大丢失帧数
+    int max_age_frames_ = 8;    // 允许短检测空窗继续预测，约 4 个推理周期
     int min_hits_ = 2;          // 确认为有效目标所需的最少连续命中次数
-    float match_threshold_ = 0.35f; // 匹配阈值 (基于归一化 DIoU)
+    float match_threshold_ = 0.30f; // 常规匹配阈值 (基于归一化 DIoU)
+    float initial_match_threshold_ = 0.20f;
+    float initial_match_min_size_ratio_ = 0.65f;
 };
-
-void build_single_inference_plate_results(
-    const std::vector<PipelineResult>& detections,
-    std::vector<PipelineResult>& out_results);
 
 #endif // SIMPLE_TRACKER_H

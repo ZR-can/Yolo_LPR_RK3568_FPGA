@@ -259,13 +259,14 @@ int inference_traffic_yolov8_model(traffic_rknn_app_context_t *app_ctx, image_bu
     image_buffer_t dst_img;
     letterbox_t letter_box;
     const float nms_threshold = NMS_THRESH;      // 默认的NMS阈值
-    const float box_conf_threshold = BOX_THRESH; // 默认的置信度阈值
     //int bg_color = 114;
     int bg_color = 0;// 黑色背景更适合车牌识别
 
     if ((!app_ctx) || !(img) || (!od_results)) {
         return -1;
     }
+    const float box_conf_threshold =
+        app_ctx->person_only ? TRAFFIC_PERSON_BOX_THRESH : BOX_THRESH;
 
     memset(od_results, 0x00, sizeof(*od_results));
     memset(&letter_box, 0, sizeof(letterbox_t));
@@ -343,11 +344,12 @@ int inference_traffic_yolov8_model_preprocessed(traffic_rknn_app_context_t *app_
     int ret;
     letterbox_t letter_box;
     const float nms_threshold = NMS_THRESH;
-    const float box_conf_threshold = BOX_THRESH;
 
     if ((!app_ctx) || (!od_results)) {
         return -1;
     }
+    const float box_conf_threshold =
+        app_ctx->person_only ? TRAFFIC_PERSON_BOX_THRESH : BOX_THRESH;
 
     memset(od_results, 0x00, sizeof(*od_results));
     memset(&letter_box, 0, sizeof(letterbox_t));

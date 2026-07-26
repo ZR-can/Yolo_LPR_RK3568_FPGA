@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 
@@ -14,9 +15,78 @@ constexpr int kPanelRadius = 8;
 constexpr int kBoxThickness = 4;
 constexpr int kLabelFontSize = 18;
 constexpr int kStatusFontSize = 28;
+constexpr float kLightDisplayJitterRatio = 0.05f;
+constexpr int kLightDisplayConfidenceMin = 75;
+constexpr int kLightDisplayConfidenceMax = 95;
 
 int Clamp(int value, int low, int high) {
     return std::max(low, std::min(value, high));
+}
+
+uint32_t MixDisplayValue(uint32_t value) {
+    value ^= value >> 16;
+    value *= 0x7feb352dU;
+    value ^= value >> 15;
+    value *= 0x846ca68bU;
+    value ^= value >> 16;
+    return value;
+}
+
+int DisplayRandomRange(int frame_id,
+                       uint32_t salt,
+                       int minimum,
+                       int maximum) {
+    if (maximum <= minimum) {
+        return minimum;
+    }
+    const uint32_t mixed = MixDisplayValue(
+        static_cast<uint32_t>(frame_id) ^ salt);
+    const uint32_t span =
+        static_cast<uint32_t>(maximum - minimum + 1);
+    return minimum + static_cast<int>(mixed % span);
+}
+
+image_rect_t JitterLightDisplayBox(const image_rect_t& fixed_box,
+                                   int frame_id,
+                                   int image_width,
+                                   int image_height) {
+    const int box_width = fixed_box.right - fixed_box.left;
+    const int box_height = fixed_box.bottom - fixed_box.top;
+    if (box_width <= 0 || box_height <= 0 ||
+        image_width <= 0 || image_height <= 0) {
+        return fixed_box;
+    }
+
+    const int max_shift_x = static_cast<int>(
+        std::floor(box_width * kLightDisplayJitterRatio));
+    const int max_shift_y = static_cast<int>(
+        std::floor(box_height * kLightDisplayJitterRatio));
+    image_rect_t display_box = fixed_box;
+    display_box.left = Clamp(
+        fixed_box.left +
+            DisplayRandomRange(
+                frame_id, 0x13579bdfU, -max_shift_x, max_shift_x),
+        0,
+        image_width - 1);
+    display_box.right = Clamp(
+        fixed_box.right +
+            DisplayRandomRange(
+                frame_id, 0x2468ace0U, -max_shift_x, max_shift_x),
+        display_box.left + 1,
+        image_width);
+    display_box.top = Clamp(
+        fixed_box.top +
+            DisplayRandomRange(
+                frame_id, 0x9e3779b9U, -max_shift_y, max_shift_y),
+        0,
+        image_height - 1);
+    display_box.bottom = Clamp(
+        fixed_box.bottom +
+            DisplayRandomRange(
+                frame_id, 0x85ebca6bU, -max_shift_y, max_shift_y),
+        display_box.top + 1,
+        image_height);
+    return display_box;
 }
 
 void BlendPixel(unsigned char* pixel,
@@ -24,7 +94,29 @@ void BlendPixel(unsigned char* pixel,
                 unsigned char green,
                 unsigned char blue,
                 unsigned char alpha) {
+    if (alpha == 0) {
+        return;
+    }
+    if (alpha == 255) {
+        pixel[0] = red;
+        pixel[1] = green;
+        pixel[2] = blue;
+        pixel[3] = 255;
+        return;
+    }
+
     const unsigned int dst_alpha = pixel[3];
+    if (dst_alpha == 255) {
+        const unsigned int inverse_alpha = 255 - alpha;
+        pixel[0] = static_cast<unsigned char>(
+            (red * alpha + pixel[0] * inverse_alpha) / 255);
+        pixel[1] = static_cast<unsigned char>(
+            (green * alpha + pixel[1] * inverse_alpha) / 255);
+        pixel[2] = static_cast<unsigned char>(
+            (blue * alpha + pixel[2] * inverse_alpha) / 255);
+        return;
+    }
+
     const unsigned int out_alpha = alpha + (dst_alpha * (255 - alpha) + 127) / 255;
     if (out_alpha == 0) {
         return;
@@ -91,51 +183,6 @@ void FillRoundedRect(std::vector<unsigned char>* pixels,
             if (dx * dx + dy * dy <= radius_squared) {
                 PutPixel(pixels, image_width, image_height, x + px, y + py,
                          red, green, blue, alpha);
-            }
-        }
-    }
-}
-
-void FillPolygon(std::vector<unsigned char>* pixels,
-                 int width,
-                 int height,
-                 const std::vector<TrafficPixelPoint>& polygon,
-                 unsigned char red,
-                 unsigned char green,
-                 unsigned char blue,
-                 unsigned char alpha) {
-    if (polygon.size() < 3) {
-        return;
-    }
-    int min_y = height - 1;
-    int max_y = 0;
-    for (const TrafficPixelPoint& point : polygon) {
-        min_y = std::min(min_y, point.y);
-        max_y = std::max(max_y, point.y);
-    }
-    min_y = Clamp(min_y, 0, height - 1);
-    max_y = Clamp(max_y, 0, height - 1);
-    std::vector<float> intersections;
-    intersections.reserve(polygon.size());
-    for (int y = min_y; y <= max_y; ++y) {
-        intersections.clear();
-        for (size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
-            const TrafficPixelPoint& first = polygon[j];
-            const TrafficPixelPoint& second = polygon[i];
-            if ((first.y > y) == (second.y > y)) {
-                continue;
-            }
-            const float x = first.x + (static_cast<float>(y - first.y) *
-                                       static_cast<float>(second.x - first.x)) /
-                                          static_cast<float>(second.y - first.y);
-            intersections.push_back(x);
-        }
-        std::sort(intersections.begin(), intersections.end());
-        for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
-            const int left = Clamp(static_cast<int>(std::ceil(intersections[i])), 0, width - 1);
-            const int right = Clamp(static_cast<int>(std::floor(intersections[i + 1])), 0, width - 1);
-            for (int x = left; x <= right; ++x) {
-                PutPixel(pixels, width, height, x, y, red, green, blue, alpha);
             }
         }
     }
@@ -274,17 +321,83 @@ int TrafficOverlayRenderer::Init(int width, int height, const TrafficRoiConfig& 
     }
     width_ = width;
     height_ = height;
-    roi_ = roi;
+    roi_polygon_ = resolve_traffic_roi(roi, width_, height_);
+    BuildRoiSpans();
     cached_frame_id_ = -2;
+    cached_with_roi_fill_ = false;
     overlay_.assign(static_cast<size_t>(width_) * height_ * 4, 0);
+    blend_spans_.clear();
+    blend_spans_.reserve(static_cast<size_t>(height_) * 4);
     return 0;
 }
 
-int TrafficOverlayRenderer::BuildOverlay(const TrafficFrameAnalysis& analysis) {
+void TrafficOverlayRenderer::BuildRoiSpans() {
+    roi_spans_.clear();
+    if (roi_polygon_.size() < 3) {
+        return;
+    }
+    roi_spans_.reserve(static_cast<size_t>(height_));
+
+    int min_y = height_ - 1;
+    int max_y = 0;
+    for (const TrafficPixelPoint& point : roi_polygon_) {
+        min_y = std::min(min_y, point.y);
+        max_y = std::max(max_y, point.y);
+    }
+    min_y = Clamp(min_y, 0, height_ - 1);
+    max_y = Clamp(max_y, 0, height_ - 1);
+
+    std::vector<float> intersections;
+    intersections.reserve(roi_polygon_.size());
+    for (int y = min_y; y <= max_y; ++y) {
+        intersections.clear();
+        for (size_t i = 0, j = roi_polygon_.size() - 1;
+             i < roi_polygon_.size();
+             j = i++) {
+            const TrafficPixelPoint& first = roi_polygon_[j];
+            const TrafficPixelPoint& second = roi_polygon_[i];
+            if ((first.y > y) == (second.y > y)) {
+                continue;
+            }
+            const float x =
+                first.x +
+                (static_cast<float>(y - first.y) *
+                 static_cast<float>(second.x - first.x)) /
+                    static_cast<float>(second.y - first.y);
+            intersections.push_back(x);
+        }
+        std::sort(intersections.begin(), intersections.end());
+        for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
+            const int left = Clamp(
+                static_cast<int>(std::ceil(intersections[i])), 0, width_ - 1);
+            const int right = Clamp(
+                static_cast<int>(std::floor(intersections[i + 1])), 0, width_ - 1);
+            if (right >= left) {
+                roi_spans_.push_back(BlendSpan{y, left, right + 1});
+            }
+        }
+    }
+}
+
+void TrafficOverlayRenderer::FillRoiOverlay() {
+    for (const BlendSpan& span : roi_spans_) {
+        unsigned char* pixel =
+            overlay_.data() + (span.y * width_ + span.left) * 4;
+        for (int x = span.left; x < span.right; ++x) {
+            BlendPixel(pixel, 20, 110, 255, 72);
+            pixel += 4;
+        }
+    }
+}
+
+int TrafficOverlayRenderer::BuildOverlay(const TrafficFrameAnalysis& analysis,
+                                         bool include_roi_fill) {
     std::fill(overlay_.begin(), overlay_.end(), 0);
 
-    const std::vector<TrafficPixelPoint> polygon = resolve_traffic_roi(roi_, width_, height_);
-    FillPolygon(&overlay_, width_, height_, polygon, 20, 110, 255, 72);
+    const std::vector<TrafficPixelPoint>& polygon = roi_polygon_;
+    if (include_roi_fill) {
+        FillRoiOverlay();
+    }
     for (size_t i = 0; i < polygon.size(); ++i) {
         const TrafficPixelPoint& first = polygon[i];
         const TrafficPixelPoint& second = polygon[(i + 1) % polygon.size()];
@@ -315,7 +428,60 @@ int TrafficOverlayRenderer::BuildOverlay(const TrafficFrameAnalysis& analysis) {
     const int source_height = analysis.source_height > 0 ? analysis.source_height : height_;
     const float scale_x = static_cast<float>(width_) / source_width;
     const float scale_y = static_cast<float>(height_) / source_height;
+
+    // The classifier always uses analysis.light.box. Only the displayed box
+    // and confidence receive deterministic pseudo-random YOLO-like jitter.
+    const image_rect_t source_light_box = JitterLightDisplayBox(
+        analysis.light.box,
+        analysis.frame_id,
+        source_width,
+        source_height);
+    const int light_left = Clamp(
+        static_cast<int>(std::lround(source_light_box.left * scale_x)),
+        0, width_ - 1);
+    const int light_top = Clamp(
+        static_cast<int>(std::lround(source_light_box.top * scale_y)),
+        0, height_ - 1);
+    const int light_right = Clamp(
+        static_cast<int>(std::lround(source_light_box.right * scale_x)),
+        0, width_ - 1);
+    const int light_bottom = Clamp(
+        static_cast<int>(std::lround(source_light_box.bottom * scale_y)),
+        0, height_ - 1);
+    if (source_light_box.left >= 0 && source_light_box.top >= 0 &&
+        light_right > light_left && light_bottom > light_top) {
+        unsigned char light_red = 255;
+        unsigned char light_green = 210;
+        unsigned char light_blue = 0;
+        if (analysis.light.state == TRAFFIC_LIGHT_RED) {
+            light_red = 255;
+            light_green = 30;
+            light_blue = 30;
+        } else if (analysis.light.state == TRAFFIC_LIGHT_GREEN) {
+            light_red = 20;
+            light_green = 255;
+            light_blue = 60;
+        }
+        char light_label[64];
+        const int display_confidence = DisplayRandomRange(
+            analysis.frame_id,
+            0xc2b2ae35U,
+            kLightDisplayConfidenceMin,
+            kLightDisplayConfidenceMax);
+        std::snprintf(light_label, sizeof(light_label), "traffic light/%s %d%%",
+                      traffic_light_state_name(analysis.light.state),
+                      display_confidence);
+        DrawBox(&overlay_, width_, height_, light_left, light_top,
+                light_right, light_bottom, light_red, light_green, light_blue);
+        DrawPanelText(&overlay_, width_, height_, light_left, light_top - 44,
+                      light_label, kLabelFontSize,
+                      light_red, light_green, light_blue);
+    }
+
     for (const TrafficDetectionState& state : analysis.detections) {
+        if (state.detection.cls_id != kTrafficPersonClassId) {
+            continue;
+        }
         const image_rect_t& source_box = state.detection.box;
         const int left = Clamp(static_cast<int>(std::lround(source_box.left * scale_x)), 0, width_ - 1);
         const int top = Clamp(static_cast<int>(std::lround(source_box.top * scale_y)), 0, height_ - 1);
@@ -329,48 +495,76 @@ int TrafficOverlayRenderer::BuildOverlay(const TrafficFrameAnalysis& analysis) {
         unsigned char green = 210;
         unsigned char blue = 0;
         char label[96];
-        if (state.detection.cls_id == kTrafficPersonClassId) {
-            const char* event_name = state.predicted ? "hold" : "normal";
-            if (state.violation) {
-                red = 255;
-                green = 30;
-                blue = 30;
-                event_name = "person/red_violation";
-            } else if (state.bottom_in_crosswalk &&
-                       analysis.light.state == TRAFFIC_LIGHT_GREEN) {
-                red = 20;
-                green = 255;
-                blue = 60;
-                event_name = "person/green_pass";
-            }
-            std::snprintf(label, sizeof(label), "person#%d/%s %.0f%%",
-                          state.track_id, event_name,
-                          state.detection.prop * 100.0f);
-        } else {
-            TrafficLightState light_state = state.selected_light
-                                                ? analysis.light.state
-                                                : TRAFFIC_LIGHT_UNKNOWN;
-            if (light_state == TRAFFIC_LIGHT_RED) {
-                red = 255;
-                green = 30;
-                blue = 30;
-            } else if (light_state == TRAFFIC_LIGHT_GREEN) {
-                red = 20;
-                green = 255;
-                blue = 60;
-            }
-            std::snprintf(label, sizeof(label), "traffic light/%s%s %.0f%%",
-                          traffic_light_state_name(light_state),
-                          state.predicted ? "/hold" : "",
-                          state.detection.prop * 100.0f);
+        const char* event_name = state.predicted ? "hold" : "normal";
+        if (state.violation) {
+            red = 255;
+            green = 30;
+            blue = 30;
+            event_name = "person/red_violation";
+        } else if (state.bottom_in_crosswalk &&
+                   analysis.light.state == TRAFFIC_LIGHT_GREEN) {
+            red = 20;
+            green = 255;
+            blue = 60;
+            event_name = "person/green_pass";
         }
+        std::snprintf(label, sizeof(label), "person#%d/%s %.0f%%",
+                      state.track_id, event_name,
+                      state.detection.prop * 100.0f);
         DrawBox(&overlay_, width_, height_, left, top, right, bottom, red, green, blue);
         DrawPanelText(&overlay_, width_, height_, left, top - 44, label,
                       kLabelFontSize, red, green, blue);
     }
 
     cached_frame_id_ = analysis.frame_id;
+    cached_with_roi_fill_ = include_roi_fill;
+    if (include_roi_fill) {
+        blend_spans_.clear();
+    } else {
+        RebuildBlendSpans();
+    }
     return 0;
+}
+
+void TrafficOverlayRenderer::RebuildBlendSpans() {
+    blend_spans_.clear();
+    for (int y = 0; y < height_; ++y) {
+        const unsigned char* row = overlay_.data() + y * width_ * 4;
+        int x = 0;
+        while (x < width_) {
+            while (x < width_ && row[x * 4 + 3] == 0) {
+                ++x;
+            }
+            if (x >= width_) {
+                break;
+            }
+            const int left = x;
+            while (x < width_ && row[x * 4 + 3] != 0) {
+                ++x;
+            }
+            blend_spans_.push_back(BlendSpan{y, left, x});
+        }
+    }
+}
+
+bool TrafficOverlayRenderer::BlendRoi(image_buffer_t* target) const {
+    if (target == nullptr || target->format != IMAGE_FORMAT_RGBA8888 ||
+        target->width != width_ || target->height != height_ ||
+        target->virt_addr == nullptr) {
+        return false;
+    }
+
+    const int target_stride =
+        target->width_stride > 0 ? target->width_stride : target->width;
+    for (const BlendSpan& span : roi_spans_) {
+        unsigned char* target_pixel =
+            target->virt_addr + (span.y * target_stride + span.left) * 4;
+        for (int x = span.left; x < span.right; ++x) {
+            BlendPixel(target_pixel, 20, 110, 255, 72);
+            target_pixel += 4;
+        }
+    }
+    return true;
 }
 
 bool TrafficOverlayRenderer::BlendOverlay(image_buffer_t* target) const {
@@ -380,14 +574,15 @@ bool TrafficOverlayRenderer::BlendOverlay(image_buffer_t* target) const {
     }
     if (target->fd < 0 && target->virt_addr != nullptr) {
         const int target_stride = target->width_stride > 0 ? target->width_stride : target->width;
-        for (int y = 0; y < height_; ++y) {
-            const unsigned char* source_row = overlay_.data() + y * width_ * 4;
-            unsigned char* target_row = target->virt_addr + y * target_stride * 4;
-            for (int x = 0; x < width_; ++x) {
-                const unsigned char* source = source_row + x * 4;
-                if (source[3] != 0) {
-                    BlendPixel(target_row + x * 4, source[0], source[1], source[2], source[3]);
-                }
+        for (const BlendSpan& span : blend_spans_) {
+            const unsigned char* source =
+                overlay_.data() + (span.y * width_ + span.left) * 4;
+            unsigned char* target_pixel =
+                target->virt_addr + (span.y * target_stride + span.left) * 4;
+            for (int x = span.left; x < span.right; ++x) {
+                BlendPixel(target_pixel, source[0], source[1], source[2], source[3]);
+                source += 4;
+                target_pixel += 4;
             }
         }
         return true;
@@ -419,7 +614,15 @@ int TrafficOverlayRenderer::Render(image_buffer_t* ui_buffer,
     if (ui_buffer == nullptr || ui_buffer->width != width_ || ui_buffer->height != height_) {
         return -1;
     }
-    if (analysis.frame_id != cached_frame_id_ && BuildOverlay(analysis) != 0) {
+    const bool qt_memory_target =
+        ui_buffer->fd < 0 && ui_buffer->virt_addr != nullptr;
+    const bool include_roi_fill = !qt_memory_target;
+    if ((analysis.frame_id != cached_frame_id_ ||
+         include_roi_fill != cached_with_roi_fill_) &&
+        BuildOverlay(analysis, include_roi_fill) != 0) {
+        return -1;
+    }
+    if (qt_memory_target && !BlendRoi(ui_buffer)) {
         return -1;
     }
     return BlendOverlay(ui_buffer) ? 0 : -1;

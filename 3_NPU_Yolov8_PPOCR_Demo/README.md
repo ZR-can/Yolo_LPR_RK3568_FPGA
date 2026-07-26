@@ -3,9 +3,14 @@
 
 ## 当前状态
 
-工程主入口现为 `main_ppocr.cc`，面向 PCIe 输入的 1280×720 小端 BGR565 视频帧，执行 YOLOv8 车牌定位和 PP-OCRv4 字符识别。原 PCIe/LPRNet 入口仅改名为 `main_lpr.cc`，继续构建为 `yolov8_lpr_pcie_demo` 供同源对照。Qt UI 已迁移到 [`../5_QT_UI_Demo`](../5_QT_UI_Demo/README.md)：视频模式通过 `RunPpocrPcieDemo()` 使用 Tracker 投票，静态图片模式通过 `RunPpocrPcieImageDemo()` 直接使用最近一次独立推理结果；本目录不再构建 Qt 目标。
+工程主入口现为 `main_ppocr.cc`，面向 PCIe 输入的 1280×720 小端 BGR565 视频帧，执行 YOLOv8 车牌定位和 PP-OCRv4 字符识别。原 PCIe/LPRNet 入口仅改名为 `main_lpr.cc`，继续构建为 `yolov8_lpr_pcie_demo` 供同源对照。Qt UI 已迁移到 [`../5_QT_UI_Demo`](../5_QT_UI_Demo/README.md)：视频模式通过 `RunPpocrPcieDemo()` 使用 Tracker 投票；静态图片模式通过 `RunPpocrPcieImageDemo()` 检测图片 generation，换图时清空旧状态，并对新图片执行连续 2 次确认，再把当前图片全部有效跟踪结果传给 Qt 结果表；本目录不再构建 Qt 目标。
 
-MPP 视频和文件型单图片入口已删除，构建不再生成 `yolov8_lpr_video_demo` 或 `yolov8_lpr_picture_demo`。新的 `yolov8_ppocr_pcie_demo` 继续复用原 PCIe 采集、6 槽帧池、每 2 帧推理一次、DIoU 跟踪、长度截断、逐位合法性校验、有效结果投票、连续 2 次命中后显示、RGA 叠加和 DRM 输出逻辑。项目 5 的“图片识别”仍读取 PCIe 静态画面，不是文件选择器；它绕过 Tracker 投票并使用 FP16 PP-OCR。当前改动已完成 Windows 工作区编码，尚待 Ubuntu aarch64 交叉编译和 RK3568 + FPGA 实链路验证。
+MPP 视频和文件型单图片入口已删除，构建不再生成 `yolov8_lpr_video_demo` 或 `yolov8_lpr_picture_demo`。新的 `yolov8_ppocr_pcie_demo` 继续复用原 PCIe 采集、6 槽帧池、每 2 帧推理一次、带高速首联尺寸门、真实观测速度、受限加速度和 8 帧短空窗预测的 DIoU 跟踪、长度截断、逐位合法性校验、有效结果投票、连续 2 次命中后显示、RGA 叠加和 DRM 输出逻辑。项目 5 的“图片识别”仍读取 PCIe 静态画面，不是文件选择器；它使用 FP16 PP-OCR，并以静态图片 generation 隔离跨图片结果后复用 Tracker 稳定确认。当前改动已完成 Windows 工作区编码，尚待 Ubuntu aarch64 交叉编译和 RK3568 + FPGA 实链路验证。
+
+`model/finetune_i8.rknn` 是项目 5 微调版 Qt demo 的独立车牌检测模型副本；
+本目录原 `model/yolov8.rknn` 和命令行 demo 默认部署行为保持不变。微调模型由项目 5
+构建系统只安装到 `yolov8_ppocr_pcie_qt_ui_finetune_demo/`，运行时阈值与原版一致为
+`BOX_THRESH=0.55`。
 
 开发过程、模型验证和性能结论见 [DEVELOPMENT_RECORD.md](DEVELOPMENT_RECORD.md)。
 

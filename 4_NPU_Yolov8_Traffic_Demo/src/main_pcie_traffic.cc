@@ -108,8 +108,12 @@ bool ParsePositiveInt(const char* text, int* value) {
 
 void PrintUsage(const char* program) {
     std::printf(
-        "Usage: %s <model.rknn> [--interval N] [--roi \"x1,y1;x2,y2;x3,y3;...\"]\n"
-        "  ROI coordinates are normalized to [0,1]; omit --roi to use the built-in polygon.\n",
+        "Usage: %s <model.rknn> [--interval N] [--roi-config PATH] "
+        "[--roi \"x1,y1;...\"] "
+        "[--light-roi \"left,top,right,bottom\"]\n"
+        "  Default config: <model-directory>/traffic_roi.conf\n"
+        "  Explicit --roi and --light-roi values override the config individually.\n"
+        "  All ROI coordinates are normalized to [0,1].\n",
         program);
 }
 
@@ -117,6 +121,9 @@ struct CommandLineOptions {
     std::string model_path;
     int inference_interval = kDefaultInferenceInterval;
     TrafficRoiConfig roi = default_traffic_roi();
+    TrafficLightRoiConfig light_roi = default_traffic_light_roi();
+    std::string roi_config_path;
+    bool roi_config_loaded = false;
 };
 
 bool ParseCommandLine(int argc, char** argv, CommandLineOptions* options) {
@@ -126,27 +133,93 @@ bool ParseCommandLine(int argc, char** argv, CommandLineOptions* options) {
     if (std::strcmp(argv[1], "--help") == 0 || std::strcmp(argv[1], "-h") == 0) {
         return false;
     }
+    *options = CommandLineOptions();
     options->model_path = argv[1];
+    options->roi_config_path =
+        JoinPath(ParentPath(options->model_path), "traffic_roi.conf");
+    bool roi_config_explicit = false;
+    bool roi_seen = false;
+    bool light_roi_seen = false;
+    std::string roi_text;
+    std::string light_roi_text;
     for (int i = 2; i < argc; ++i) {
         if (std::strcmp(argv[i], "--interval") == 0) {
             if (i + 1 >= argc || !ParsePositiveInt(argv[++i], &options->inference_interval)) {
                 std::fprintf(stderr, "--interval requires an integer >= 1\n");
                 return false;
             }
+        } else if (std::strcmp(argv[i], "--roi-config") == 0) {
+            if (roi_config_explicit) {
+                std::fprintf(stderr, "--roi-config may only be specified once\n");
+                return false;
+            }
+            if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+                std::fprintf(stderr, "--roi-config requires a file path\n");
+                return false;
+            }
+            options->roi_config_path = argv[++i];
+            roi_config_explicit = true;
         } else if (std::strcmp(argv[i], "--roi") == 0) {
+            if (roi_seen) {
+                std::fprintf(stderr, "--roi may only be specified once\n");
+                return false;
+            }
             if (i + 1 >= argc) {
                 std::fprintf(stderr, "--roi requires a polygon string\n");
                 return false;
             }
-            std::string error;
-            if (!parse_normalized_traffic_roi(argv[++i], &options->roi, &error)) {
-                std::fprintf(stderr, "Invalid --roi: %s\n", error.c_str());
+            roi_text = argv[++i];
+            roi_seen = true;
+        } else if (std::strcmp(argv[i], "--light-roi") == 0) {
+            if (light_roi_seen) {
+                std::fprintf(stderr, "--light-roi may only be specified once\n");
                 return false;
             }
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "--light-roi requires left,top,right,bottom\n");
+                return false;
+            }
+            light_roi_text = argv[++i];
+            light_roi_seen = true;
         } else {
             std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
             return false;
         }
+    }
+
+    std::string error;
+    if (access(options->roi_config_path.c_str(), R_OK) == 0) {
+        if (!load_traffic_roi_config_file(
+                options->roi_config_path.c_str(),
+                &options->roi,
+                &options->light_roi,
+                &error)) {
+            std::fprintf(stderr, "Invalid ROI config: %s\n", error.c_str());
+            return false;
+        }
+        options->roi_config_loaded = true;
+    } else if (roi_config_explicit) {
+        std::fprintf(stderr,
+                     "Explicit ROI config is not readable: %s\n",
+                     options->roi_config_path.c_str());
+        return false;
+    } else {
+        std::fprintf(
+            stderr,
+            "Warning: default ROI config is not readable; using built-in values: %s\n",
+            options->roi_config_path.c_str());
+    }
+
+    if (roi_seen &&
+        !parse_normalized_traffic_roi(roi_text.c_str(), &options->roi, &error)) {
+        std::fprintf(stderr, "Invalid --roi: %s\n", error.c_str());
+        return false;
+    }
+    if (light_roi_seen &&
+        !parse_normalized_traffic_light_roi(
+            light_roi_text.c_str(), &options->light_roi, &error)) {
+        std::fprintf(stderr, "Invalid --light-roi: %s\n", error.c_str());
+        return false;
     }
     return true;
 }
@@ -255,7 +328,6 @@ struct PipelinePerformance {
     std::atomic<uint64_t> display_failures;
     std::atomic<uint64_t> overlay_failures;
     std::atomic<uint64_t> person_detections;
-    std::atomic<uint64_t> traffic_light_detections;
     std::atomic<uint64_t> violation_events;
     double inference_ms;
     double color_rule_ms;
@@ -273,7 +345,6 @@ struct PipelinePerformance {
           display_failures(0),
           overlay_failures(0),
           person_detections(0),
-          traffic_light_detections(0),
           violation_events(0),
           inference_ms(0.0),
           color_rule_ms(0.0),
@@ -291,6 +362,7 @@ struct TrafficAppContext {
     int inference_interval;
     TrafficOverlayRenderer overlay_renderer;
     TrafficTemporalTracker temporal_tracker;
+    image_rect_t light_box = {-1, -1, -1, -1};
     LatestFrameQueue display_queue;
     LatestFrameQueue inference_queue;
     LatestTrafficResult latest_result;
@@ -339,7 +411,12 @@ void InferenceThread(TrafficAppContext* context) {
             const std::chrono::steady_clock::time_point rule_begin =
                 std::chrono::steady_clock::now();
             const int rule_result = analyze_traffic_frame(
-                &image, &detections, context->roi, frame->frame_id, &instant_analysis);
+                &image,
+                &detections,
+                context->roi,
+                context->light_box,
+                frame->frame_id,
+                &instant_analysis);
             instant_analysis.inference_ms = inference_ms;
             TrafficFrameAnalysis analysis;
             const int tracking_result = rule_result == 0
@@ -355,17 +432,15 @@ void InferenceThread(TrafficAppContext* context) {
                 }
                 ++context->performance.inference_jobs;
                 context->performance.person_detections.fetch_add(analysis.person_count);
-                context->performance.traffic_light_detections.fetch_add(
-                    analysis.traffic_light_count);
                 context->performance.violation_events.fetch_add(
                     analysis.violation_event_count);
                 std::printf(
-                    "[Traffic] frame=%d light=%s(raw=%s) red=%d green=%d color_active=%d tracked=%d roi=%d active=%d new_events=%d total_events=%d\n",
+                    "[Traffic] frame=%d light=%s(raw=%s) red_score=%d green_score=%d color_active=%d tracked=%d roi=%d active=%d new_events=%d total_events=%d\n",
                     analysis.frame_id,
                     traffic_light_state_name(analysis.light.state),
                     traffic_light_state_name(analysis.light.instant_state),
-                    analysis.light.red_count,
-                    analysis.light.green_count,
+                    analysis.light.red_evidence,
+                    analysis.light.green_evidence,
                     analysis.light.active_count,
                     analysis.person_count,
                     analysis.persons_in_crosswalk,
@@ -549,6 +624,15 @@ void PrintRoi(const TrafficRoiConfig& roi) {
     std::printf("\n");
 }
 
+void PrintLightRoi(const TrafficLightRoiConfig& roi) {
+    std::printf(
+        "Traffic light ROI (normalized): %.6f,%.6f,%.6f,%.6f\n",
+        roi.rect.left,
+        roi.rect.top,
+        roi.rect.right,
+        roi.rect.bottom);
+}
+
 void PrintPerformance(const TrafficAppContext& context,
                       const PcieFrameSource& source,
                       uint64_t start_ms) {
@@ -580,11 +664,9 @@ void PrintPerformance(const TrafficAppContext& context,
                 static_cast<unsigned long long>(context.inference_queue.Dropped()),
                 static_cast<unsigned long long>(
                     context.performance.inference_failures.load()));
-    std::printf("Inference samples: tracked_person=%llu detected_traffic_light=%llu red_violation_events=%llu\n",
+    std::printf("Inference samples: tracked_person=%llu red_violation_events=%llu\n",
                 static_cast<unsigned long long>(
                     context.performance.person_detections.load()),
-                static_cast<unsigned long long>(
-                    context.performance.traffic_light_detections.load()),
                 static_cast<unsigned long long>(
                     context.performance.violation_events.load()));
     if (inference_attempts > 0) {
@@ -621,6 +703,14 @@ int RunTrafficPcieDemo(const CommandLineOptions& options,
     TrafficAppContext context;
     context.roi = options.roi;
     context.inference_interval = options.inference_interval;
+    if (!options.light_roi.enabled) {
+        std::fprintf(stderr, "Traffic light ROI is required\n");
+        return -1;
+    }
+    context.light_box = resolve_traffic_light_roi(
+        options.light_roi,
+        PcieFrameSource::kFrameWidth,
+        PcieFrameSource::kFrameHeight);
     PcieFrameSource source;
     const std::string labels_path = JoinPath(ParentPath(options.model_path), "labels_list.txt");
 
@@ -630,7 +720,13 @@ int RunTrafficPcieDemo(const CommandLineOptions& options,
     std::printf("Model: %s\nLabels: %s\nInference interval: %d\n",
                 options.model_path.c_str(), labels_path.c_str(),
                 context.inference_interval);
+    if (!options.roi_config_path.empty()) {
+        std::printf("ROI config: %s (%s)\n",
+                    options.roi_config_path.c_str(),
+                    options.roi_config_loaded ? "loaded" : "built-in fallback");
+    }
     PrintRoi(context.roi);
+    PrintLightRoi(options.light_roi);
 
     if (init_traffic_post_process(labels_path.c_str()) != 0) {
         return -1;
@@ -639,9 +735,16 @@ int RunTrafficPcieDemo(const CommandLineOptions& options,
         deinit_traffic_post_process();
         return -1;
     }
-    context.yolo.person_light_only = true;
-    std::printf("Postprocess: person/light only, traffic-light results first\n");
-    std::printf("Temporal rules: person hold=8 inference frames, light vote=3-of-5\n");
+    context.yolo.person_only = true;
+    std::printf(
+        "Postprocess: person only, confidence > %.2f; "
+        "traffic-light color uses fixed ROI pixels\n",
+        TRAFFIC_PERSON_BOX_THRESH);
+    std::printf(
+        "Temporal rules: person hold=2 inference frames, "
+        "light acquire=3-of-5, switch=4-of-5\n");
+    std::printf(
+        "Violation rule: stable red + person inside 3%% inset crosswalk ROI\n");
     if (context.temporal_tracker.Init(context.roi) != 0) {
         std::fprintf(stderr, "Traffic temporal tracker initialization failed\n");
         release_traffic_yolov8_model(&context.yolo);
@@ -826,12 +929,17 @@ int RunTrafficPcieDemo(const CommandLineOptions& options,
 }  // namespace
 
 int RunTrafficPcieQtDemo(const char* model_path,
+                         const TrafficRoiConfig& roi,
+                         const TrafficLightRoiConfig& light_roi,
                          const PcieUiCallbacks* callbacks) {
-    if (model_path == nullptr || callbacks == nullptr) {
+    if (model_path == nullptr || roi.points.size() < 3U ||
+        !light_roi.enabled || callbacks == nullptr) {
         return -1;
     }
     CommandLineOptions options;
     options.model_path = model_path;
+    options.roi = roi;
+    options.light_roi = light_roi;
     return RunTrafficPcieDemo(options, callbacks);
 }
 

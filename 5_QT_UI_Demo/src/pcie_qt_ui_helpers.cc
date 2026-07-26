@@ -40,10 +40,14 @@ void ApplyTrafficStyle(QWidget* widget) {
         "QMainWindow, QWidget { background: #11151b; color: #e9eef2;"
         " font-family: SimHei, \"WenQuanYi Micro Hei\", \"Noto Sans CJK SC\", sans-serif;"
         " font-size: 16px; }"
-        "#videoLabel { background: #05080c; border: 1px solid #2a3440; }"
+        "#videoLabel { background: #05080c; border: 0; }"
+        "#leftBottomPanel { background: #0d1218; border-top: 1px solid #2a3440; }"
+        "#sidePanel { background: #111820; border-left: 1px solid #2a3440; }"
         "#titleLabel { font-size: 28px; font-weight: 700; color: #f7fbff; }"
         "#modeBadgeLabel { background: #16202a; border: 1px solid #2c4253;"
         " color: #35d690; padding: 6px; font-weight: 700; }"
+        "#operationMessageLabel { background: #16202a; border: 1px solid #2c4253;"
+        " color: #35d690; padding: 8px; font-size: 20px; font-weight: 700; }"
         "#resultTableWidget { background: #0b1016; alternate-background-color: #101821;"
         " border: 1px solid #2a3440; color: #f4f7fa; font-size: 20px; font-weight: 700;"
         " selection-background-color: #1c8b6c; selection-color: #ffffff; }"
@@ -59,9 +63,9 @@ void ApplyTrafficStyle(QWidget* widget) {
         "#fpsValueLabel, #capturedValueLabel, #inferenceValueLabel, #latencyValueLabel,"
         " #deviceValueLabel, #linkValueLabel, #payloadValueLabel,"
         " #stateValueLabel { color: #f4f7fa; font-weight: 600; }"
-        "QPushButton { background: #1c8b6c; color: white; border: 0; font-weight: 700; }"
-        "QPushButton:pressed { background: #156f57; }"
-        "QStatusBar { background: #11151b; color: #94a4b5; }");
+        "QPushButton { background: #1c8b6c; color: white; border: 0;"
+        " font-size: 18px; font-weight: 700; }"
+        "QPushButton:pressed { background: #156f57; }");
 }
 
 QString ModeBadgeText(const QString& mode) {

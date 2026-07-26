@@ -141,44 +141,44 @@ int CheckTrackerRejectsTransientValidPlate() {
     return 1;
 }
 
-int CheckSingleInferenceUsesCurrentPlate() {
-    std::vector<PipelineResult> immediate;
-    build_single_inference_plate_results(
-        std::vector<PipelineResult>(
-            1, MakeTrackerDetection("京A12345", 0.99f)),
-        immediate);
-    if (immediate.size() != 1U ||
-        !immediate[0].has_valid_plate_text ||
-        immediate[0].plate_name != "京A12345") {
+int CheckImageSwitchResetDropsPreviousPlate() {
+    SimplePlateTracker tracker;
+    const std::vector<PipelineResult> first_image(
+        1, MakeTrackerDetection("京A12345", 0.99f));
+    tracker.update(first_image, 0);
+    tracker.update(first_image, 1);
+
+    std::vector<PipelineResult> tracked;
+    tracker.predict(1, tracked);
+    if (tracked.size() != 1U ||
+        !tracked[0].has_valid_plate_text ||
+        tracked[0].plate_name != "京A12345") {
         std::fprintf(stderr,
-                     "single inference failed: first plate was not accepted\n");
+                     "image switch reset failed: first plate was not confirmed\n");
         return 1;
     }
 
-    build_single_inference_plate_results(
-        std::vector<PipelineResult>(
-            1, MakeTrackerDetection("京B12345", 0.90f)),
-        immediate);
-    if (immediate.size() != 1U ||
-        !immediate[0].has_valid_plate_text ||
-        immediate[0].plate_name != "京B12345") {
+    tracker.reset();
+    const std::vector<PipelineResult> second_image(
+        1, MakeTrackerDetection("京B12345", 0.95f));
+    tracker.update(second_image, 2);
+    tracker.predict(2, tracked);
+    if (!tracked.empty()) {
         std::fprintf(stderr,
-                     "single inference failed: previous plate was retained\n");
+                     "image switch reset failed: previous plate survived reset\n");
         return 1;
     }
 
-    build_single_inference_plate_results(
-        std::vector<PipelineResult>(
-            1, MakeTrackerDetection("京B12X", 0.95f)),
-        immediate);
-    if (immediate.size() != 1U ||
-        immediate[0].has_valid_plate_text ||
-        immediate[0].plate_name != "京B12X") {
-        std::fprintf(stderr,
-                     "single inference failed: invalid current text handling\n");
-        return 1;
+    tracker.update(second_image, 3);
+    tracker.predict(3, tracked);
+    if (tracked.size() == 1U &&
+        tracked[0].has_valid_plate_text &&
+        tracked[0].plate_name == "京B12345") {
+        return 0;
     }
-    return 0;
+    std::fprintf(stderr,
+                 "image switch reset failed: new plate was not confirmed\n");
+    return 1;
 }
 
 }  // namespace
@@ -306,7 +306,7 @@ int main() {
                                        "湘VWUJ3N",
                                        "蓝");
     failures += CheckTrackerRejectsTransientValidPlate();
-    failures += CheckSingleInferenceUsesCurrentPlate();
+    failures += CheckImageSwitchResetDropsPreviousPlate();
     failures += CheckTrackerVote("ordinary sequence O rejected",
                                  "京AA12O3",
                                  "蓝",

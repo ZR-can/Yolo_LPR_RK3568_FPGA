@@ -184,10 +184,9 @@ static float sigmoid(float x) { return 1.0 / (1.0 + expf(-x)); }
 
 static float unsigmoid(float y) { return -1.0 * logf((1.0 / y) - 1.0); }
 
-static bool is_enabled_class(int class_id, bool person_light_only)
+static bool is_enabled_class(int class_id, bool person_only)
 {
-    return !person_light_only || class_id == TRAFFIC_PERSON_CLASS_ID ||
-           class_id == TRAFFIC_LIGHT_CLASS_ID;
+    return !person_only || class_id == TRAFFIC_PERSON_CLASS_ID;
 }
 
 inline static int32_t __clip(float val, float min, float max)
@@ -237,7 +236,7 @@ static int process_i8(int8_t *box_tensor, int32_t box_zp, float box_scale,
                       std::vector<float> &boxes, 
                       std::vector<float> &objProbs, 
                       std::vector<int> &classId, 
-                      bool person_light_only,
+                      bool person_only,
                       float threshold)
 {
     int validCount = 0;
@@ -261,7 +260,7 @@ static int process_i8(int8_t *box_tensor, int32_t box_zp, float box_scale,
 
             int8_t max_score = -score_zp;
             for (int c= 0; c< OBJ_CLASS_NUM; c++){
-                if (is_enabled_class(c, person_light_only) &&
+                if (is_enabled_class(c, person_only) &&
                     (score_tensor[offset] > score_thres_i8) &&
                     (score_tensor[offset] > max_score))
                 {
@@ -310,7 +309,7 @@ static int process_u8(uint8_t *box_tensor, int32_t box_zp, float box_scale,
                       std::vector<float> &boxes,
                       std::vector<float> &objProbs,
                       std::vector<int> &classId,
-                      bool person_light_only,
+                      bool person_only,
                       float threshold)
 {
     int validCount = 0;
@@ -337,7 +336,7 @@ static int process_u8(uint8_t *box_tensor, int32_t box_zp, float box_scale,
             uint8_t max_score = -score_zp;
             for (int c = 0; c < OBJ_CLASS_NUM; c++)
             {
-                if (is_enabled_class(c, person_light_only) &&
+                if (is_enabled_class(c, person_only) &&
                     (score_tensor[offset] > score_thres_u8) &&
                     (score_tensor[offset] > max_score))
                 {
@@ -388,7 +387,7 @@ static int process_fp32(float *box_tensor, float *score_tensor, float *score_sum
                         std::vector<float> &boxes, 
                         std::vector<float> &objProbs, 
                         std::vector<int> &classId, 
-                        bool person_light_only,
+                        bool person_only,
                         float threshold)
 {
     int validCount = 0;
@@ -409,7 +408,7 @@ static int process_fp32(float *box_tensor, float *score_tensor, float *score_sum
 
             float max_score = 0;
             for (int c= 0; c< OBJ_CLASS_NUM; c++){
-                if (is_enabled_class(c, person_light_only) &&
+                if (is_enabled_class(c, person_only) &&
                     (score_tensor[offset] > threshold) &&
                     (score_tensor[offset] > max_score))
                 {
@@ -460,7 +459,7 @@ static int process_i8_rv1106(int8_t *box_tensor, int32_t box_zp, float box_scale
                              std::vector<float> &boxes,
                              std::vector<float> &objProbs,
                              std::vector<int> &classId,
-                             bool person_light_only,
+                             bool person_only,
                              float threshold) {
     int validCount = 0;
     int grid_len = grid_h * grid_w;
@@ -483,7 +482,7 @@ static int process_i8_rv1106(int8_t *box_tensor, int32_t box_zp, float box_scale
             int8_t max_score = -score_zp;
             offset = offset * OBJ_CLASS_NUM;
             for (int c = 0; c < OBJ_CLASS_NUM; c++) {
-                if (is_enabled_class(c, person_light_only) &&
+                if (is_enabled_class(c, person_only) &&
                     (score_tensor[offset + c] > score_thres_i8) &&
                     (score_tensor[offset + c] > max_score)) {
                     max_score = score_tensor[offset + c]; // 8 traffic classes
@@ -574,7 +573,7 @@ int traffic_post_process(traffic_rknn_app_context_t *app_ctx, void *outputs, let
                                 (int8_t *)_outputs[score_idx]->virt_addr, app_ctx->output_attrs[score_idx].zp,
                                 app_ctx->output_attrs[score_idx].scale, (int8_t *)score_sum, score_sum_zp, score_sum_scale,
                                 grid_h, grid_w, stride, dfl_len, filterBoxes, objProbs, classId,
-                                app_ctx->person_light_only, conf_threshold);
+                                app_ctx->person_only, conf_threshold);
         }
         else
         {
@@ -611,14 +610,14 @@ int traffic_post_process(traffic_rknn_app_context_t *app_ctx, void *outputs, let
                                      (uint8_t *)score_sum, score_sum_zp, score_sum_scale,
                                      grid_h, grid_w, stride, dfl_len,
                                      filterBoxes, objProbs, classId,
-                                     app_ctx->person_light_only, conf_threshold);
+                                     app_ctx->person_only, conf_threshold);
 #else
             validCount += process_i8((int8_t *)_outputs[box_idx].buf, app_ctx->output_attrs[box_idx].zp, app_ctx->output_attrs[box_idx].scale,
                                      (int8_t *)_outputs[score_idx].buf, app_ctx->output_attrs[score_idx].zp, app_ctx->output_attrs[score_idx].scale,
                                      (int8_t *)score_sum, score_sum_zp, score_sum_scale,
                                      grid_h, grid_w, stride, dfl_len, 
                                      filterBoxes, objProbs, classId,
-                                     app_ctx->person_light_only, conf_threshold);
+                                     app_ctx->person_only, conf_threshold);
 
                                      
 #endif
@@ -628,7 +627,7 @@ int traffic_post_process(traffic_rknn_app_context_t *app_ctx, void *outputs, let
             validCount += process_fp32((float *)_outputs[box_idx].buf, (float *)_outputs[score_idx].buf, (float *)score_sum,
                                        grid_h, grid_w, stride, dfl_len, 
                                        filterBoxes, objProbs, classId,
-                                       app_ctx->person_light_only, conf_threshold);
+                                       app_ctx->person_only, conf_threshold);
         }
 #endif
     }
@@ -678,18 +677,8 @@ int traffic_post_process(traffic_rknn_app_context_t *app_ctx, void *outputs, let
         last_count++;
     };
 
-    if (app_ctx->person_light_only)
+    if (app_ctx->person_only)
     {
-        // Keep traffic-light boxes ahead of crowded person results so a small,
-        // valid light cannot be displaced by the global result capacity.
-        for (int i = 0; i < validCount && last_count < OBJ_NUMB_MAX_SIZE; ++i)
-        {
-            int n = indexArray[i];
-            if (n != -1 && classId[n] == TRAFFIC_LIGHT_CLASS_ID)
-            {
-                append_result(i);
-            }
-        }
         for (int i = 0; i < validCount && last_count < OBJ_NUMB_MAX_SIZE; ++i)
         {
             int n = indexArray[i];

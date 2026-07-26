@@ -2,6 +2,115 @@
 
 操作和部署步骤见 [README.md](README.md)。
 
+## 2026-07-27 图片模式多车牌结果传递
+
+- 修复图片模式画面可叠加多个有效车牌框、但 Qt 右侧“当前图片识别结果”始终只有一行的问题。
+  根因是 `PcieUiStatus` 只有单个 `plate_text/plate_type/plate_confidence`，显示线程遍历
+  `display_results` 时取到第一个有效车牌后立即结束，后续有效跟踪结果未进入 Qt 状态。
+- 新增 `PcieUiPlateResult` 和仅供图片模式使用的 `image_plate_results`；图片模式现在把当前
+  generation 内所有经过 Tracker 连续 2 次确认且通过 GA 36 校验的结果一起交给 Qt。原单结果
+  字段继续保留并只取第一个有效结果，确保视频模式现有去重和结果表行为不变；YOLO、PP-OCR、
+  Tracker 参数及图片换代隔离逻辑均未调整。
+- MSVC 19.41 已完成项目 5 `main_pcie_qt.cc` 对象编译；`plate_rule_test`、
+  `simple_tracker_motion_test`、`ppocr_retry_policy_test` 和
+  `static_image_change_detector_test` 全部通过。当前 Windows 环境没有 WSL/aarch64 交叉工具链，
+  仍需在 Linux 构建机重新交叉编译项目 5，并在 RK3568 图片模式用多车牌静态画面复测结果行数。
+
+## 2026-07-27 板端复测后的推理延迟运动补偿
+
+- 板端长时统计为采集/显示 `27.41/27.38 FPS`、推理 `13.60 FPS`、平均推理
+  `56.15 ms`，显示转换与叠加仅 `7.42/0.31 ms`，无显示、叠加或推理失败；推理队列
+  丢 46/6165（0.75%）。因此框仍落后不是 Qt/显示吞吐问题：56.15 ms 相当于 1.54 个
+  显示帧，结果通常由约 2 帧后的显示画面消费，偶发排队时接近 4 帧。
+- 上一版离线回放在检测结果产生帧立即更新 Tracker，低估了板端异步延迟。改为分别延迟
+  2/4 帧重放后，原等速模型在高速视频的中心平均/95 分位归一化误差为
+  `0.131/0.362` 和 `0.264/0.607`，平均框 IoU 仅 `0.499/0.224`，与板端“定位跟不上”
+  一致。
+- Tracker 现以每条轨迹最近两次真实检测观测的帧号和框状态直接计算观测速度；空检测结果
+  只推进运动状态，不再改变速度采样时间基准。在位置/速度之外增加受限加速度，按
+  `position=0.90`、`velocity=0.80`、`acceleration=0.35` 融合，并把各轴加速度限制为
+  当前框尺度的 12%/帧²。显示外推和检测关联统一使用同一常加速度状态，原高速首联和
+  8 帧最大寿命保持不变。
+- 同一延迟回放中，高速视频 2 帧延迟误差降到 `0.068/0.202`、平均 IoU 提高到 `0.701`；
+  4 帧延迟误差降到 `0.121/0.346`、平均 IoU 提高到 `0.554`。正常视频对应误差仅由
+  `0.006/0.024` 到 `0.007/0.026`、由 `0.011/0.042` 到 `0.014/0.044`。新增
+  2/4 帧加速目标显示预测回归。性能摘要新增 `Tracker result lag average/max`，仅在显示线程
+  首次消费新推理结果时统计结果帧与显示帧差，用于板端直接验证常态及峰值延迟。MSVC 19.41
+  主机回归通过：`simple_tracker_motion_test`、`plate_rule_test`、
+  `static_image_change_detector_test`、`ppocr_retry_policy_test` 全部通过；没有新增编译错误，
+  仍需重新交叉编译项目 5 并在 RK3568 上复测。
+
+## 2026-07-27 视频高速车牌跟踪抗甩框
+
+- 使用 `D:\ffmpeg-8.1-essentials_build\bin\ffmpeg.exe`/`ffprobe.exe` 对比两段
+  回归视频：`test/testvideo/testvideo1.mp4` 为 640×362、固定 24 FPS；
+  `test/testvideo/other/testvideo1.mp4` 为 3840×2160、约 29.69 FPS。后者为车辆
+  朝镜头接近的俯视道路画面，车牌中心下移和框尺寸增长均明显快于前者。
+- 使用部署同源旧 `best.pt`、板端一致 `conf=0.55/NMS=0.5`，按每 2 帧一次并统一映射到
+  1280×720 后离线回放：高速视频 520 个采样帧中 142 帧有检测，存在连续检测空窗；典型
+  高速首联中心跨度为 64 px 和 133 px，对应原归一化 DIoU 得分 0.343 和 0.227，低于
+  原固定门限 0.35。原 `predict()` 又只在 `time_since_update == 0` 时输出，因此首次漏检
+  就会隐藏已确认框，`max_age_frames_` 没有真正用于短时预测显示。
+- `SimplePlateTracker` 的常规 DIoU 门限由 0.35 调到 0.30；只对尚未达到 2 次命中且宽高
+  比均不低于 0.65 的年轻轨迹开放 0.20 首联门，避免全局放宽后把远处另一辆车接入旧轨迹。
+  Alpha-Beta 增益由 0.70/0.40 调到 0.85/0.60，短空窗预测寿命由 5 帧调到 8 帧，并按
+  `time_since_update + display_dt` 限制实际显示年龄；超过寿命的轨迹不再参与当前帧关联，
+  宽高预测增加 1 px 下限，防止过期轨迹复活或外推产生反向框。
+- 新增独立 `simple_tracker_motion_test`，覆盖高速大跨度首联、8 帧短检测空窗继续预测、
+  超龄隐藏，以及尺寸差异过大的新目标不得借用高速首联门。MSVC 19.41 主机回归通过：
+  `simple_tracker_motion_test: all cases passed`、`plate_rule_test: all cases passed
+  (ga36_plate_type_v3)`、`static_image_change_detector_test: all cases passed`、
+  `ppocr_retry_policy_test: all cases passed`；没有新增编译错误，仅保留
+  `simple_tracker.cc` 原有整数转浮点告警。RK3568 + FPGA 两段实流仍待重新交叉编译部署后
+  复测。
+- 用相同 2 帧采样检测序列离线重放前后 Tracker：正常视频轨迹初始化数 9→8、预测中心
+  平均/95 分位归一化误差 0.007/0.025→0.010/0.025，未出现尾部误差退化；高速视频轨迹
+  初始化数 23→19、成功关联 133→137，预测中心平均误差 0.270→0.193（降低 28.5%）、
+  95 分位 0.730→0.582（降低 20.3%）。高速视频有框的 2 帧采样时刻由 121→187，其中
+  61 个是检测空窗内的受限预测，不是降低 YOLO 置信度得到的新检测。
+
+## 2026-07-25 静态图片代际隔离与两次确认
+
+- 图片模式原先直接复用最近一次单帧推理结果：显示帧已切换到新图片时，异步推理结果仍可能属于
+  上一张图片；同一静态图片的单帧 PP-OCR 波动也会立即覆盖当前文字，分别造成旧车牌短暂残留和
+  正确/错误结果跳变。
+- 首次板端日志出现 `Static image generation: 2410...2416` 逐帧递增，但 PP-OCR 连续稳定输出
+  同一合法车牌；由此确认原“4 个单像素采样点变化即换图”的阈值会把 HDMI/BGR565 帧间微扰
+  误判为换图，Tracker 因每帧重置而永远不能达到连续 2 次命中。
+- `StaticImageChangeDetector` 已改为仅在图片模式下按 16 像素网格提取 `2×2` BGR565 块均值，
+  以块均值颜色距离过滤离散像素抖动；显著变化块必须达到至少 12 个（更大输入按全部采样块的
+  0.2% 上调），且候选新图连续 2 帧彼此一致，才递增图片 generation。显示线程随后重置
+  `SimplePlateTracker`，并拒绝 generation 不匹配的旧推理结果。
+- 首次抗噪版本实测图片模式只有 `23.12 FPS`，而显示和 Qt 均无丢帧，确认瓶颈位于同步采集路径
+  中每帧约 230,400 像素的 `8/4` 块采样。现改为 `16/2`，每帧只读取约 14,400 像素，理论工作量
+  降低 16 倍；性能汇总新增 `Average static image change detection`，用于板端直接核对检测开销。
+- 图片模式改为复用视频模式的连续 2 次相同文本确认和合法结果投票，但每次图片 generation
+  变化都会清空投票池。因此单帧错误不再造成跳变，上一张车牌也不会依靠历史累计票数滞留；
+  新图合法车牌在两次独立推理一致后显示。
+- `PcieUiStatus` 新增 `image_generation`，供 Qt 在新图首个显示帧到达时立即清空上一张图片的
+  结果表，不再等待下一次推理或 250 ms 状态节流。新增静态图片变化检测回归和 Tracker
+  generation 重置回归；原无状态 `build_single_inference_plate_results()` 已随图片模式重新
+  接入 Tracker 而删除。
+- 本机 MSVC 回归通过：
+  `static_image_change_detector_test: all cases passed`、
+  `plate_rule_test: all cases passed (ga36_plate_type_v3)`、
+  `ppocr_retry_policy_test: all cases passed`。完整 Linux/RKNN 后端仍需在 Ubuntu aarch64
+  交叉编译，并在 RK3568 + FPGA 上确认同一图片 generation 保持不变、真实换图只递增一次，
+  再实测两次确认延迟和长时间稳定性。
+
+## 2026-07-24 准确度展示新增 PP-OCR FP16 分组表
+
+- 基于 `results/ga36_plate_type_v3_replay_report.md` 的 `fold affine FP16` 分组明细，生成 `outputs/019f93e4-9213-7970-9528-2e5cd0f225a2/presentations/pcie-async-performance/output/PCIe准确度展示_含PPOCR表.pptx`。保留左侧 YOLO 准确度指标，在右侧新增 11×7 原生 PowerPoint 表格，覆盖 basic/hard 绿牌与非绿牌以及使、学、港、澳、警、领共 10 个子集/类型。
+- PP-OCR 总体 v3 后正确率采用报告实测 `90.597453%`，展示为 `90.6%`；各行百分比四舍五入到 1 位，样本数、改对、误改和改后仍错保持原始整数。
+- 警牌报告实测为原始 `59.090909%`、v3 后 `54.545455%`、误改 2，未将实测值伪造为约 80%；页面另设“优化目标 ≈80%（非实测）”说明，以区分当前证据和后续目标。
+- 模板一致性检查通过；最终包包含 1 个 slide XML、2 个原生表格 graphicFrame、1 个非空媒体和 0 个空页级占位符。
+
+## 2026-07-24 PCIe 性能展示右侧改为原生 PPT 元素
+
+- 新增 `outputs/019f93e4-9213-7970-9528-2e5cd0f225a2/presentations/pcie-async-performance/output/PCIe异步并行性能展示_原生元素版.pptx`。右侧资源/效率面板不再使用整张 PNG/SVG，而是在原 449×331 内容边界内用 28 个可编辑 PowerPoint 文本框、圆角矩形和分隔线重建。
+- 保留 NPU 71% 运行快照、模型文件 7.07 MiB、内存 41.0%、显示链路达成 99.7%、AI 调度达成 99.1%、H2 准确率 84.21% 与吞吐率 101.96 牌/s等全部既定口径；左侧异步并行关系和模型耗时未修改。
+- 对象检查确认右侧 449×331 整图已删除，最终仅保留 6 个模板/图标图片对象；模板一致性检查通过，PPTX 包为 1 个 slide XML、6 个非空媒体、0 个空页级占位符。
+
 ## 2026-07-24 PCIe 异步并行性能展示页数据口径更新
 
 - 在不改变原左右双卡布局的前提下，完成 `outputs/019f93e4-9213-7970-9528-2e5cd0f225a2/presentations/pcie-async-performance/output/PCIe异步并行性能展示_并行与资源更新.pptx`：左侧明确表示 FPGA/PCIe 完整帧 28.10 FPS、显示后端 7.89 ms/帧并以 28.02 FPS 绘制、AI 每 2 帧调度 1 次且实测 57.94 ms/任务、13.92 FPS，避免将异步支路误解为串行耗时相加。
@@ -168,3 +277,17 @@
 - PP-OCR 页同时体现官方模型到 73 类 CTC-only 模型的差异、7.31 MiB ONNX（相对官方标称 10 MB 约缩减 27%）、折叠 FP16 与 H2 混合量化的板端性能/精度/大小对比。
 - 最终文件：`outputs/019f934f-e675-7f60-a4ed-51f27f91b32b/presentations/lpr-pipeline-layout/output/LPR模型介绍_YOLO与PPOCR.pptx`。
 - QA：模板帧映射检查通过，模板一致性检查通过，布局检查 0 error / 0 warning；PPTX 包含 2 个 slide XML、51 个 ZIP 条目、0 个零字节条目。
+
+## 2026-07-27 微调 YOLO RKNN 独立副本
+
+- 将
+  `../2_Model_Conversion_PC_Simulation/yolov8/model/finetune_i8.rknn`
+  复制为 `model/finetune_i8.rknn`，文件大小为 4,634,120 字节，SHA-256 为
+  `E11C5A8E69C34EC2FC3DA45C81A070EECC88D177EE75374830D861DCF19CA30F`。
+- 原 `model/yolov8.rknn` 未覆盖，仍为独立的 4,633,800 字节文件；项目 3 命令行
+  demo 的默认模型与构建安装行为不变。
+- 新文件仅由项目 5 的
+  `yolov8_ppocr_pcie_qt_ui_finetune_demo` 独立安装包使用；安装时改名为该目录内的
+  `model/yolov8.rknn`，使图片和视频模式均按既有应用目录契约加载微调模型。
+- 新旧 Qt demo 均保持 `BOX_THRESH=0.55`，未修改项目 3 的 C/C++ 源文件或
+  `include/postprocess.h`。

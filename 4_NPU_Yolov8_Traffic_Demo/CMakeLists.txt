@@ -80,6 +80,7 @@ foreach(TRAFFIC_TARGET yolov8_traffic_benchmark yolov8_traffic_pcie_demo)
     install(FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/model/yolov8_traffic_i8.rknn
         ${CMAKE_CURRENT_SOURCE_DIR}/model/labels_list.txt
+        ${CMAKE_CURRENT_SOURCE_DIR}/model/traffic_roi.conf
         DESTINATION ${TRAFFIC_TARGET}/model
     )
     install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/README.md DESTINATION ${TRAFFIC_TARGET})

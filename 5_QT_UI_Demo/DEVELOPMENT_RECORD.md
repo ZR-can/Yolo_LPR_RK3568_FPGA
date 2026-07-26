@@ -1,5 +1,338 @@
 # 5_QT_UI_Demo 开发记录
 
+## 2026-07-27 图片模式结果栏支持多车牌
+
+- 修复“图片识别”画面已有多个有效车牌框、右侧“当前图片识别结果”却只显示一张的问题。
+  项目 3 后端现通过 `PcieUiStatus::image_plate_results` 传递当前图片 generation 的全部有效
+  跟踪结果；Qt 在 generation 变化或新的推理结果到达时清空旧表，并按车牌、类型、PP-OCR
+  置信度逐行重建当前图片结果。
+- 修改严格限定在图片模式：视频模式继续使用原有单结果字段、历史车牌去重和逐次追加逻辑；
+  行人违法模式不受影响。无有效车牌时图片结果表保持为空，换图时仍立即清除上一张图片结果。
+- MSVC 19.41 已成功编译 `main_pcie_qt.cc` 为对象文件；共享后端的
+  `plate_rule_test`、`simple_tracker_motion_test`、`ppocr_retry_policy_test` 和
+  `static_image_change_detector_test` 全部通过。当前主机没有可用的 WSL/aarch64 交叉构建环境，
+  板端部署前仍需在 Linux 构建机执行项目 5 完整交叉编译。
+
+## 2026-07-27 板端复测后的车牌推理延迟补偿
+
+- 板端统计确认 Qt painted `27.37 FPS`、后端显示 `27.38 FPS`、平均 Qt 准备/交接
+  `5.01 ms`，无显示或叠加失败；平均推理 `56.15 ms` 相当于约 1.54 个显示帧。因此
+  视频模式框落后来自共享车牌 Tracker 对 2–4 帧异步结果延迟的等速补偿不足，不修改
+  Qt 绘制线程、显示队列或每 2 帧推理调度。
+- 项目 3 的共享 Tracker 已改为按真实检测观测间隔估速，并加入按框尺度限幅的加速度状态；
+  空检测结果不再污染速度时间基准。延迟检测序列回放中，高速视频 2 帧延迟平均误差
+  `0.131→0.068`、IoU `0.499→0.701`，4 帧延迟平均误差 `0.264→0.121`、
+  IoU `0.224→0.554`；正常视频误差变化不超过 0.003。Qt 源码无需同步修改，但必须重新
+  交叉编译项目 5 才会包含新的 `simple_tracker.cc`。后端性能摘要同步增加
+  `Tracker result lag average/max`，供板端确认实际结果延迟是否落在本轮验证的 2–4 帧范围。
+  共享后端的运动、车牌规则、静态图片代际和 PP-OCR 回退四组 MSVC 主机测试均已通过。
+
+## 2026-07-27 视频模式高速车牌抗甩框
+
+- Qt `视频识别` 直接编译项目 3 的 `simple_tracker.cc`，因此本轮共享获得高速车牌修复：
+  常规 DIoU 门限 0.35→0.30；只为未确认且宽高比均不低于 0.65 的轨迹开放 0.20 高速
+  首联门；Alpha-Beta 增益 0.70/0.40→0.85/0.60；已确认轨迹可在最多 8 个采集帧的检测
+  空窗内继续受限外推，超龄轨迹既不显示也不重新关联。
+- 部署同源旧 `best.pt` 按板端 `conf=0.55/NMS=0.5`、每 2 帧检测序列离线回放后，高速
+  视频轨迹初始化数 23→19、关联数 133→137，中心平均/95 分位归一化误差
+  0.270/0.730→0.193/0.582；正常视频 95 分位保持 0.025。共享后端的
+  `simple_tracker_motion_test`、`plate_rule_test`、`static_image_change_detector_test` 和
+  `ppocr_retry_policy_test` 已通过 MSVC 主机回归；Qt UI 源码本身未改，仍需重新交叉编译
+  项目 5 并在 RK3568 + FPGA 上播放两段原视频复测。
+
+## 2026-07-27 运行提示修复与轻量资源监控
+
+- 右侧主运行提示改为只服从Qt采集开关，不再显示后端单次PCIe重试消息：运行时固定为
+  “正在采集”，暂停时固定为“等待PCIe帧数据”。这避免正常 `EPERM` 重试消息造成两个状态
+  来回跳变，也避免暂停后被已排队的旧 `capturing=true` 状态覆盖。相同提示不会重复写入
+  `QLabel`；保存成功/失败反馈保留2秒，随后自动恢复当前运行/暂停主状态。
+- 左下 1280×360 区域改为上下两层：上层压缩运行状态/PCIe状态，下层新增“系统资源
+  （最近60秒）”。资源栏以 1 Hz 读取 CPU 温度、NPU 负载和内存占用，各保留60个样本并使用
+  Qt 原生 `QPainter` 绘制细柱历史；不引入 Qt Charts、OpenGL、外部进程或采样线程。
+- CPU 温度读取 `/sys/class/thermal/thermal_zone*/temp`，NPU 优先读取
+  `/sys/kernel/debug/rknpu/load` 并兼容 RK3568 devfreq 路径，内存使用
+  `/proc/meminfo` 的 `MemTotal/MemAvailable`。指标不可读时显示 `--`，不影响视频采集。
+- Qt `uic` 和离屏布局验证通过：紧凑状态行位于 `(12,732)`、尺寸 `1256×154`，资源组位于
+  `(12,896)`、尺寸 `1256×172`，内部图表画布为 `1222×114`；5行运行状态文字均未裁切。
+  Qt主入口、样式和新监控控件均通过 MSVC 19.41 UTF-8语法编译，启动脚本 `bash -n` 与
+  `git diff --check -- 5_QT_UI_Demo` 通过。仍需在RK3568上确认实际thermal/NPU节点读数并复测FPS。
+- 2026-07-27板端统计为：Captured/Display pipeline/Display handoff均 `3703 / 28.28 FPS`、
+  Qt painted `3702 / 28.24 FPS`，帧池和显示队列丢帧均为0；推理 `1834 / 14.00 FPS`、
+  推理队列丢18，符合每2帧推理一次。Qt帧准备/交接平均 `5.03 ms`，远低于28 FPS对应的
+  `35.36 ms`帧周期。`EPERM=3915`期间仍持续完整交付3703帧，因此只作为驱动正常等待重试，
+  不再驱动右侧主状态。状态优先级修改已再次通过 `uic`、MSVC语法编译和`git diff --check`。
+
+## 2026-07-26 恢复红灯入区判定与 YOLO 风格灯框
+
+- 按最新需求撤销上一版行人移动历史、连续 3 帧和最小位移门槛，恢复原始规则：稳定红灯且
+  `person` 底边命中有效斑马线 ROI 即激活 `red_violation`，同一 track 仍只累计一次事件。
+- 为减少原规则在边缘的误判，配置文件和命令行输入坐标保持不变，`resolve_traffic_roi()` 在
+  板端把多边形每个顶点围绕顶点中心缩放为 97%，即内缩 3%；叠加显示、瞬时入区和 Tracker
+  违法判定统一使用同一个内缩后多边形，不存在显示与规则区域不一致。
+- 删除规律三角波灯框位移，改为按 `frame_id` 哈希出的确定性伪随机四边扰动；每条边偏移不超过
+  固定框宽/高的 5%，框位置和尺寸均呈不规则小幅变化。标签恢复为 YOLO 风格
+  `traffic light/<state> NN%`，其中 `NN` 为 `75%～95%` 的伪随机展示置信度。真实红绿取色仍只
+  读取固定 ROI，显示框和展示置信度均不进入灯色或违法计算。
+- 本机回归已覆盖内缩后边缘不入区、进入内缩区域立即触发且同一 track 只计一次；交通规则测试
+  通过，叠加层源码通过 MSVC 独立编译，`git diff --check` 通过。仍需部署到 RK3568 后用夜间
+  视频复核 5% 框扰动和 75%～95% 展示置信度的观感。
+
+## 2026-07-26 1920×1080 固定分区与右侧运行提示
+
+- 最终大屏方案改为 HDMI 原生 `1920×1080@60Hz`，全屏画布严格划分为左上
+  `1280×720` 视频、左下 `1280×360` 运行/PCIe 状态、右侧 `640×1080` 操作面板，三个区域
+  固定且互不覆盖。
+- 视频标签固定为 1280×720、`scaledContents=false`，去掉边框对内容区的像素侵占；帧到达后
+  直接 `QPixmap::fromImage()` 提交，不再调用逐帧 `QPixmap::scaled()`，保证输入视频及其叠加
+  文字按 1:1 像素显示。
+- 运行状态和 PCIe 状态已移入左下区域；右侧仅保留当前模式/模式选择、车牌结果表、运行提示和
+  开始/保存按钮。原状态栏移除，避免额外占用全屏高度。
+- 右侧运行提示统一承接原有状态：初始/暂停为“等待 PCIe”、启动为“正在启动”、采集为
+  “正在采集”、保存成功为“已保存”，模型缺失和保存失败等错误也显示在同一区域。
+- `run-qt-demo.sh` 改为验证/选择 HDMI `1920×1080@60Hz` 并回读；显示器未声明该模式时明确
+  失败，避免固定界面在小输出时序下被裁切。原来的 720p 整屏显示器缩放方案不再使用。
+- 本机已完成 XML 解析和 Qt `uic` 生成检查；离屏几何实测为视频 `(0,0,1280,720)`、左下
+  `(0,720,1280,360)`、右侧 `(1280,0,640,1080)`。Qt 主入口和 UI helper 均通过 MSVC 19.41
+  UTF-8 语法编译；启动脚本通过 Git Bash `bash -n`，模拟 XRandR 回归覆盖 720p→1080p
+  切换、原生 1080p 保持和不支持 1080p 时拒绝启动，`git diff --check -- 5_QT_UI_Demo`
+  通过。仍需在 ARM64/RK3568 上交叉编译并以 PCIe 实流复测 `Captured / Qt UI painted` 帧率。
+
+## 2026-07-26 交通灯显示扰动与边缘静止误报抑制
+
+- 主交通灯仍严格使用 `traffic_roi.conf` 解析出的固定像素矩形取色；仅
+  `TrafficOverlayRenderer` 对绘制矩形应用确定性三角波位移，水平/垂直最大偏移分别为固定框
+  宽/高的 5%。扰动基于 `frame_id` 平滑变化，不修改 `analysis.light.box`，因此不会影响
+  `red_score/green_score`、灯色投票或违法规则。
+- 行人违法由“稳定红灯且底边命中 ROI”改为红灯期间的外到内移动确认：同一 track 必须先被
+  已匹配检测观察在 ROI 外，再连续 3 个已匹配推理帧进入 ROI，且平滑框底部中心累计位移达到
+  `max(8 像素, 框高的 5%)` 才激活红框并累计事件。绿灯、未确认移动、边缘静止和预测保持帧
+  均不能新建违法事件；瞬时分析层只报告 person 是否位于 ROI，不再自行产生无时序依据的违法。
+- C++ 回归新增同一边界附近连续静止不产生事件、真实连续移动入区产生且只产生 1 个事件；
+  交通规则/时序测试通过，叠加层扰动源码通过 MSVC 独立编译。仍需在 RK3568 夜间实流复核
+  5% 显示幅度和 8 像素/5% 位移门槛是否与现场透视尺度匹配。
+
+## 2026-07-26 1080p 大屏改由显示器整屏缩放
+
+> 此方案已被上方“1920×1080 固定分区与右侧运行提示”替代，以下保留为历史决策记录。
+
+- 最终方案明确保持现有 Qt Widgets/X11/xcb 架构，不引入 OpenGL、DRM 或 EGLFS：1080p 大屏
+  统一切换到 1280×720@60Hz 主输出，Qt 按 1:1 逻辑像素全屏绘制，逐帧视频只允许缩小、
+  禁止上采样，最终 720p→1080p 物理面板扩展完全交给显示器。
+- 显示器只能缩放整路 HDMI 时序，不能单独识别并缩放 Qt 界面中的视频控件。为满足大屏物理
+  1920×1080 全屏显示且不在 RK3568 CPU 上执行 720p→1080p 插值，一键启动脚本现检测已连接
+  HDMI 的当前模式：模式达到 1920×1080 或更大时，使用 XRandR 将 RK3568 输出切换为
+  1280×720，由显示器内部 scaler 将整套 Qt 界面映射到原生 1920×1080 面板。
+- Qt 主窗口改为 `showFullScreen()`。1280×800 小屏保持原输出模式；1080p 大屏成功切换后，
+  RK3568 的 HDMI 信号仍是 1280×720，显示器物理像素才是 1920×1080，因此视频、侧栏和文字
+  会作为完整画面一起放大。这条路径避免 CPU 图像上采样，也降低板端 1080p X11 扫描带宽。
+- 脚本优先选择名称以 `HDMI` 开头的已连接输出。`xrandr` 缺失、未检测到 HDMI、活动模式无法
+  解析或显示器 EDID 不接受 1280×720 时只输出警告并保留原模式，程序仍可启动；此时继续使用
+  上一节的“Qt 预览禁止上采样”回退路径。
+- XRandR 切换现显式指定 `1280x720 / 60 Hz / 0x0 / primary`，并在切换后回读活动模式，只有
+  回读为 `1280x720` 才报告显示器缩放已启用。启动环境同时固定
+  `QT_AUTO_SCREEN_SCALE_FACTOR=0`、`QT_ENABLE_HIGHDPI_SCALING=0` 和 `QT_SCALE_FACTOR=1`，
+  避免 Qt 根据 1080p 显示器 EDID 再次引入隐式逻辑缩放。
+- 板端验收日志应先出现
+  `Display output HDMI-...: 1920x1080 -> 1280x720; monitor panel scaling enabled.`，
+  `xrandr --current` 应把 `*` 标在 `1280x720`；随后复核 `Captured` 与
+  `Qt UI painted` 是否稳定在输入源约 28 FPS。显示器菜单中的缩放模式需选择“全屏”或
+  “保持宽高比”，不能选择 1:1 点对点。
+- `run-qt-demo.sh` 已通过 Git Bash `bash -n`，并用模拟的 XRandR 1080p 输出验证活动模式解析为
+  `1920x1080`；全屏入口 `main_pcie_qt.cc` 已用现有 Qt 5.12.9 头文件通过 MSVC 19.41
+  语法编译，`git diff --check -- 5_QT_UI_Demo` 通过。当前主机无 RK3568/XRandR 实屏，
+  最终模式切换、显示器 scaler 行为和 FPS 仍以板端复测为准。
+- 最终加固版本再次通过 `bash -n`；模拟 `HDMI-A-1` 回归确认 1920×1080 会切换并回读为
+  1280×720，1280×800 小屏则保持原模式且不会调用模式切换。累计 Qt 主入口语法编译与
+  `git diff --check` 均通过。
+
+## 2026-07-26 1080p 外接屏预览帧率修复
+
+- 板端实测在 1280×800 外接屏上 PCIe 采集和 Qt 显示约为 28 FPS，而 1920×1080@60Hz
+  大屏上两者降至约 19 FPS。代码核查确认 PCIe 输入、NPU 输入和后端 RGBA 帧均固定为
+  1280×720；随屏幕变化的热路径只有 Qt 主线程按 `videoLabel` 尺寸逐帧执行的
+  `QPixmap::scaled()`。窗口在 1080p 屏上放大后会把每帧上采样到大于原图的预览尺寸，
+  显著增加 CPU/X11 上传和 DDR 带宽，并通过同进程资源竞争拖慢采集线程。
+- 新增 `NativeCappedPreviewSize()`，预览保持等比缩小，但禁止把 1280×720 输入上采样。
+  1080p 大屏上的视频区域以原生 1280×720 居中显示；小于原图的窗口仍按现有快速缩小路径
+  自适应，避免改变已经达到约 28 FPS 的 1280×800 小屏路径。
+- 板端日志新增 `Qt preview: source/viewport/output` 和退出时
+  `Average Qt frame prepare/handoff`，用于确认 1080p 下输出被限制为不超过 1280×720，
+  并与 `Captured`、`Qt UI painted` 一起复核采集/显示是否恢复到输入源约 28 FPS。
+- `pcie_qt_ui_helpers.cc` 与 `main_pcie_qt.cc` 已使用现有 Qt 5.12.9 头文件通过 MSVC
+  19.41 语法编译，`git diff --check -- 5_QT_UI_Demo` 通过。最终 FPS 仍需重新交叉编译并在
+  RK3568 的 1920×1080@60Hz 输出上实测；验收值为日志 `output` 不超过 `1280x720`，
+  `Average Qt frame prepare/handoff` 明显下降，且 `Captured`/`Qt UI painted` 回到约 28 FPS。
+
+## 2026-07-26 固定 ROI 配置与全入口参数统一
+
+- 新增项目 4 单一源配置 `model/traffic_roi.conf`，写入本次复核后的斑马线
+  `1.000000,0.690454;1.000000,0.762743;0.000000,0.886932;0.000000,0.645042;0.675873,0.617238`
+  和主灯 `0.547917,0.235185,0.581250,0.339815`。内置安全值同步更新，避免配置缺失时回退到
+  旧机位坐标。
+- 公共交通规则模块新增严格的 `traffic_roi.conf` 加载器；要求同时存在 `roi` 与
+  `light_roi`，并拒绝重复键、未知键、空值和非法归一化坐标。运行优先级统一为
+  “内置安全值 < 默认/指定配置文件 < 命令行单项覆盖”。
+- 项目 4 PCIe Demo 默认从 RKNN 模型同目录读取配置，Qt 默认从可执行文件旁的
+  `model/traffic/traffic_roi.conf` 读取；两者均新增 `--roi-config PATH`，且 `--roi` 与
+  `--light-roi` 可只传一项。Qt 一键启动脚本同步校验并转发三类参数。
+- 项目 4 和 Qt 的 CMake 安装清单、两个 `build-linux.sh` 部署校验均加入配置文件，保证配置
+  随模型进入板端目录。离线 Mask2Former 标定脚本新增可直接替换默认文件的
+  `traffic_roi.conf` 输出，并保留原有双命令行参数输出。
+- 本机验证已通过：C++ 配置加载/灯色/时序回归、Python 自动标定 7 项回归与 `py_compile`、
+  Qt 5.12 主入口 MSVC 语法编译、项目 4 CMake 配置生成以及 `git diff --check`。项目 5 的
+  Windows CMake 已完成配置阶段，但生成阶段仍受既有 ARM64 Qt `moc` 无法在 Windows 执行的
+  限制；需在 Ubuntu aarch64 交叉编译环境运行 `build-linux.sh` 完成最终全量链接和部署复测。
+- `.conf` 的 INI 语法高亮会把未加引号值中的分号误显示成注释色；默认文件和自动标定输出现将
+  两个值统一放入双引号，公共加载器负责去除引号，同时继续兼容旧版未加引号格式。Qt README
+  的“成功输出位于”根目录经构建脚本复核仍正确，并已在目录树补列
+  `model/traffic/traffic_roi.conf`。
+
+## 2026-07-26 板端固定灯区直读简化
+
+- 固定斑马线与主交通灯 ROI 已完成离线标定后，板端不再需要二次判断“哪个 YOLO 交通灯框是
+  主灯”。`analyze_traffic_frame()` 现直接接收解析后的固定像素矩形，每个推理帧只遍历该矩形
+  的当前 BGR565 像素并累计红/绿证据；已删除交通灯候选评分、框扩张、首次锁定、漏检框缓存、
+  动态回退以及伪造 fixed detection 的分支。
+- 交通时序只保留红绿票防闪，删除运行时不会产生的 `unknown` 清空分支；person 时序仍保留
+  ID、框平滑、8 个推理帧漏检保持和违规事件去重。叠加层直接读取 `analysis.light.box` 绘制
+  唯一 `/fixed` 灯框，检测列表只承载 person，不再显示 YOLO 未选交通灯框。
+- YOLO PCIe 后处理开关由 `person_light_only` 收敛为 `person_only`：行人模式从输出头开始只
+  比较并输出 `person`，不再解码、NMS 排序或优先写入 traffic-light 结果；八类图片 benchmark
+  仍保持全部类别输出。
+- 默认固定灯区采用 `test2` 最终标定值
+  `0.547917,0.235185,0.581250,0.339815`，因此 Qt 零参数启动兼容不变；`--light-roi` 仅用于
+  换机位后的固定区域覆盖，运行时不存在动态定位路径。桥接入口仍拒绝未启用灯区的非法直接调用。
+- C++ 回归改为验证固定灯区忽略任意远处 traffic-light detection、检测列表只剩 person、
+  RGB888 的弱红/明确红/黄色/暗灯规则、BGR565 高 5 位红通道与 6 位绿通道，以及 5 帧迟滞切换。
+  规则/时序测试和叠加层 MSVC 编译已通过；Linux 专用后处理仍需 Ubuntu aarch64 全目标编译。
+
+## 2026-07-26 固定主交通灯离线标定与切换防闪
+
+- `test2` 首次正式标定的交通灯语义框为 `(1037,238)-(1187,382)`，将左侧行人灯、右侧未点亮
+  车行灯及部分支架合并成 `150×144` 区域，板端颜色统计会读入过多无关背景。离线脚本现将完整
+  语义框仅用于候选评分，再在所选 MAIN 内跨帧累计亮度不低于 `160`、饱和度不低于 `100` 且
+  红/绿通道明显强于蓝通道的发光核心；邻近的上下红绿核心合并后只增加 `0.006` 短边比例的边距。
+  若没有可靠核心则显式标记 `MAIN FALLBACK` 并回退语义框，不输出空区域。
+- 使用原 `test2.mp4`、21 个抽帧和 GPU Mask2Former 完整重跑后，候选语义框为
+  `(1050,251)-(1174,369)`，实际 `MAIN CORE` 为 `(1052,254)-(1116,367)`，从原 `150×144`
+  收缩为 `64×113`，横向排除了右侧车行灯并保留行人灯上下红绿发光位置。最终归一化固定区域为
+  `0.547917,0.235185,0.581250,0.339815`；JSON 同时记录 `main_semantic_pixel_box`、
+  `core_refined=true` 和核心像素数，便于审计。
+- Python 回归新增亮红/亮绿核心保留、蓝色和暗像素排除，以及同一行人灯上下红绿核心合并但不
+  合并旁侧车行灯的用例；共 6 项测试及 `py_compile` 均通过。
+- 实际 1920×1080 视频连续标定在第 8 帧附近被人工中断，堆栈落在 NumPy 的通用
+  `isin()` 布尔数组分配路径。离线脚本现针对模型仅有少量目标类别的事实，改为复用同一个
+  布尔缓冲区并逐 ID 直接比较生成斑马线/交通灯掩码；语义标签同步降为 `int16`，且在分配两张
+  全分辨率掩码前提前释放 Mask2Former 每查询 GPU 输出引用。新增回归确认类别 8、23、48 的
+  输出掩码互不串类，识别规则和生成文件格式均不变。
+- 实流截图 `pcie_overlay_20260725_171354_665_frame9633.png` 与
+  `pcie_overlay_20260725_172258_982_frame16848.png` 显示：实际绿色行人灯仍在原位置发光，但
+  YOLO 后续把被选主灯框偏移到右侧暗区，导致旧红灯状态未能被真实绿色像素更新。问题不在单纯
+  延长历史状态，而在主灯身份随每帧候选框重新选择。
+- “首次 YOLO 正确后永久锁框”仍会放大首次误检，因此最终方案改为与斑马线相同的离线固定标定。
+  `auto_crosswalk_roi_mask2former.py` 现复用同一次抽帧和 Mapillary Mask2Former 推理，同时读取
+  `Crosswalk - Plain / Lane Marking - Crosswalk` 与 `Traffic Light` 语义掩码。交通灯掩码经
+  跨帧投票和邻近分量合并后输出全部稳定候选；候选 ID 按从左到右排列，自动 MAIN 分数以持续率
+  为主、与斑马线中心距离为辅、面积仅占少量权重。
+- 自动 MAIN 必须经 `traffic_light_roi_preview.jpg` 人工复核；选错时使用
+  `--main-light-index N` 重跑，不把自动结果隐藏成首帧永久状态。输出新增
+  `main_traffic_light_roi.txt`、`traffic_scene_roi.json`、交通灯共识掩码和候选预览；生成的板端
+  命令同时包含 `--roi` 与 `--light-roi "left,top,right,bottom"`。
+- 项目 4 与 Qt 启动链路均新增 `TrafficLightRoiConfig` 解析和传递。配置固定灯区后，板端每个
+  推理帧直接读取该矩形的当前 BGR565 像素，YOLO 的多个交通灯框只显示、不参与主灯颜色判断；
+  固定框标签为 `/fixed`，日志为 `light_fixed=1`。未传 `--light-roi` 时仅逐帧选择候选作为兼容
+  路径，不再永久锁定第一次 YOLO 结果。
+- 为避免绿灯衰减时少量红色背景立即投红，红灯单帧判定增加明确优势带：
+  `red_score >= green_score * 1.25` 才投红；`green_score >= red_score` 仍直接投绿，保证黄色按
+  可通行处理；弱红领先或无有效颜色像素也输出 `raw=green`，防止较暗绿灯保留旧红状态。已有
+  稳定绿灯仍需 4/5 个明确红票才切换为红灯。
+- C++ 回归覆盖固定 ROI 解析/映射、固定绿灯区忽略远处红色 YOLO 错框、无配置时首次错误候选不
+  永久锁定、弱红按绿、黄色可通行及 4 票切换；Python 回归覆盖候选合并、自动 MAIN、人工覆盖和
+  双 ROI 命令生成。规则测试在 MSVC 19.41 下通过，Python 测试与 `py_compile` 通过。Windows
+  全目标构建仍被原有 `image_utils.c` 缺少 Linux `dirent.h` 阻断，需在 Ubuntu aarch64 完整构建
+  后用真实视频生成候选预览并复核主灯框。
+
+## 2026-07-25 Qt 默认资源与一键启动
+
+- Qt 主程序不再接收五个模型/字典路径，统一按可执行文件目录加载车牌 YOLOv8、视频 H2 PP-OCR、
+  图片 FP16 PP-OCR、字符字典和交通 YOLOv8；启动时逐项检查必需文件，缺失即明确报错退出。
+- 命令行仅保留可选 `--roi "x1,y1;x2,y2;x3,y3;..."`。ROI 复用项目 4 的归一化多边形解析和
+  校验，并从 Qt 主入口经窗口、工作线程和 `RunTrafficPcieQtDemo()` 显式传给交通后端；不传时
+  使用现有内置人行道多边形。
+- 新增板端 `run-qt-demo.sh`：校验 root 和参数，执行 `systemctl isolate graphical.target`，
+  最多等待 X11 30 秒，检查 Xorg/LightDM 与 Xauthority，重载 `pango_pci_driver`，设置
+  `DISPLAY/XAUTHORITY/QT_QPA_PLATFORM/RKNN_LOG_LEVEL/LD_LIBRARY_PATH` 后以 `exec` 启动 Demo。
+- CMake 将启动脚本按可执行权限安装到 Demo 目录，`build-linux.sh` 同时校验启动脚本及全部内置
+  模型/字典资源，避免生成表面成功但无法零参数启动的不完整安装包。
+- 本机验证已完成：Qt 主源使用 MSVC 19.41 + Qt 5 头文件编译通过，两份 Bash 脚本均通过
+  `bash -n`，启动脚本的帮助/非法参数分支通过，CMake 配置/生成和 `git diff --check` 通过。
+  仍需在 Ubuntu aarch64 重新全量构建后部署到 RK3568，分别复测默认 ROI 和自定义 `--roi`
+  的行人模式叠加位置。
+
+## 2026-07-25 图片模式稳定确认与换图即时清理
+
+- 根因确认：旧图片模式绕过 `SimplePlateTracker`，每个 PP-OCR 单帧结果都会直接覆盖画面和表格；
+  同时显示线程会把最近一次异步推理结果叠加到更新后的 PCIe 显示帧，导致正确/错误文字跳变，
+  换图后还会短暂显示上一张车牌。
+- 首次 generation 版本板端复测又发现同一图片的 generation 从 2410 开始逐帧递增，导致新接入
+  的 Tracker 每帧清空、画面完全没有框和文字。后端已将单像素低阈值检测改为 `2×2` 块均值、
+  至少 12 个显著变化块，并要求连续 2 帧确认新图片，避免 HDMI 帧间微扰触发换代。
+- 随后的性能统计显示采集、显示和 Qt 同步降到 `23.12 / 23.12 / 23.11 FPS`，且所有队列和显示
+  均无丢帧，定位到同步采集线程中的换图检测开销。采样现从 `8` 像素步长、`4×4` 块改为
+  `16` 像素步长、`2×2` 块，每帧读取像素从约 230,400 降为 14,400（减少 16 倍）；汇总新增
+  平均换图检测耗时，需用下一次 RK3568 实测确认采集恢复到输入源约 28 FPS。
+- 项目 3 后端现为每张静态图片分配 generation。原始 BGR565 画面变化时，新 generation
+  立即清空旧跟踪/投票状态，并屏蔽上一 generation 尚未完成的推理结果；新图片复用视频模式的
+  连续 2 次相同文本确认，兼顾抗单帧 OCR 波动和快速切图。
+- `PcieUiStatus::image_generation` 随每个 Qt 显示帧回传。Qt 帧槽直接处理 generation 变化，
+  第一张新图显示时即清空右侧旧车牌行，不再受 250 ms 状态回调节流影响；同 generation 内仍
+  按 `inference_jobs` 只更新一次结果表。
+- 静态图片变化回归现覆盖全网格离散像素噪声、单帧瞬态大变化、连续两帧真实换图和稳定新图；
+  与 Tracker 换图重置回归均通过。修改后的
+  `main_pcie_qt.cc` 使用本机 Qt 5.12.9 头文件完成 MSVC 语法编译。项目 5 CMake 配置阶段通过，
+  Windows 生成阶段仍因 ARM64 Qt 的 `moc` 不能在主机运行而停止；需在 Ubuntu aarch64 完整
+  构建，并用 RK3568 + FPGA 静态图片切换实测确认。
+
+## 2026-07-25 行人模式灯色改为红绿二分类
+
+- 项目 4 共用交通规则后端取消红/绿至少 2 个有效像素和 `1.2` 倍颜色优势门槛；检测到
+  traffic-light 后，主灯框内红色有效像素严格多于绿色时单帧判红，其余情况一律判绿。
+- 黄色 HSV 色相并入绿色；红绿相等、没有有效颜色像素或其他弱颜色证据均按可通行处理，不触发
+  行人违法。只有当前推理帧没有任何交通灯检测框时，单帧状态才为 `unknown`。
+- 保留候选交通灯框选择、最近 5 个推理帧至少 3 票稳定和漏检保持机制；Qt 无需修改即可继续显示
+  后端稳定灯色。仍需在 Ubuntu 重新交叉编译，并用 RK3568 + FPGA 实流验证夜间、远距离和多灯场景。
+- 本机合成像素回归覆盖纯红、纯绿、黄色、红绿平票、无有效颜色和无检测框，六种分支均通过；
+  修改的 `traffic_violation.cc` 通过 MSVC 编译，全 Linux/RKNN 目标仍以 Ubuntu 交叉编译为准。
+- 板端日志出现肉眼红灯但 `red=0 green=0 color_active=1762`，确认大量有效彩色像素落在旧红/黄绿
+  色相范围之外；BGR565 直接解码与 RGA/Qt 显示路径使用相同通道定义，未发现独立红蓝交换。
+  红色高段因此由 `H>=340°` 扩展为 `H>=300°`，覆盖摄像头偏洋红的红灯；新增 `color_other`
+  日志字段，便于区分仍未归类的蓝/青色背景或错误候选框。黄色区间和红绿二分类规则不变；
+  偏洋红红灯、黄色和纯蓝三种合成回归分别通过红、绿、绿预期。
+- 后续确认测试视频为夜间，红灯受曝光和白平衡影响可能整体偏橙黄，固定 HSV 色相段无法同时
+  覆盖该红灯并把真实黄灯固定排除。最终判定改为在有效像素上直接累加 R/G 通道强度：
+  `red_score > green_score` 判红，否则判绿；日志相应由像素计数改为通道证据分数并移除
+  `color_other`。理想黄色 R/G 相等时仍为绿色，真实偏橙黄红灯只要总体 R 强于 G 即可判红。
+- 本机 BGR565 合成回归覆盖偏黄红灯、纯黄、纯绿、纯蓝和无交通灯框，结果依次为红、绿、绿、
+  绿、未知；规则源文件通过 MSVC 单独编译，仍需用夜间实流的实际 `red_score/green_score` 复核。
+- 夜间实流截图 `pcie_overlay_20260725_121459_107_frame2994.png` 证明被选中的右侧主灯框正确，
+  灯珠肉眼及 RGBA 像素均为红橙色；去除绿色叠加像素后，主灯区域平均约为
+  `R=173/G=79/B=55`。同期规则日志平均约为 `red_score/color_active=57`、
+  `green_score/color_active=77`，其中所谓 red 与截图 B 通道高度吻合，最终确认规则模块将
+  BGR565 低 5 位误作 R、高 5 位误作 B。现改为高 5 位 R、低 5 位 B，并同步修正项目 4
+  `image_utils.c` 的 CPU BGR565→RGB888 回退路径，使其与实际 RGA 显示位序一致。按修正位序
+  重新执行的 BGR565 偏黄红、黄、绿、蓝、无框回归全部通过。
+- 红绿识别恢复后，板端视频仍存在少量错误单帧聚集导致稳定灯色短时切换。灯色窗口继续保持
+  最近 5 个推理帧，但改为迟滞状态机：首次从 `unknown` 建立状态仍需 3/5；已有稳定灯色后需
+  4/5 个相反票才切换，1～3 个短时相反票全部忽略；4/5 个 `unknown` 才清除稳定状态。该调整
+  抑制瞬时变色，同时保留真实红绿切换和连续漏检恢复路径。合成时序回归已覆盖首次确认、
+  三票保持、四票双向切换及四票 unknown 清除，全部通过。
+
+## 2026-07-24 PCIe 展示页右侧原生元素化
+
+- 生成 `outputs/019f93e4-9213-7970-9528-2e5cd0f225a2/presentations/pcie-async-performance/output/PCIe异步并行性能展示_原生元素版.pptx`，保留既有左右双卡布局和全部 Qt/PCIe 并行性能数据。
+- 右侧资源占用与运行效率区域由 28 个原生 PPT 对象组成，主指标、模型条、三张效率卡、平台信息条均可独立编辑；原整图对象已删除，不再依赖生图、SVG 或 PNG 面板。
+- 最终渲染无裁切、遮挡或乱码，模板一致性检查为 0 项问题；包内媒体由 7 个降为 6 个，确认右侧指标整图未残留。
+
 ## 2026-07-24 Qt/PCIe 并行关系与运行效率展示更新
 
 - 更新 `outputs/019f93e4-9213-7970-9528-2e5cd0f225a2/presentations/pcie-async-performance/output/PCIe异步并行性能展示_并行与资源更新.pptx`，保留原左右拉开式双卡布局。左侧以树状关系表达：完整帧输入 28.10 FPS；显示链路后端 7.89 ms/帧、Qt 绘制 28.02 FPS；AI 链路每 2 帧调度 1 次、57.94 ms/任务、13.92 FPS。
@@ -462,3 +795,84 @@ If `Display presented/handoff` is close to `Qt UI painted`, Qt painting is not
 the main bottleneck. If capture is much higher than display pipeline, focus on
 conversion/overlay/back-pressure. If inference is low while display is smooth,
 focus on RKNN/NPU/postprocess.
+
+## 2026-07-27 Traffic overlay hot-path optimization
+
+- Board measurements isolated the traffic/person overlay as the display bottleneck:
+  about `22.25 ms` per frame versus `0.47 ms` for the plate-video overlay.
+- The visual contract is unchanged: the translucent crosswalk ROI and the top
+  `LIGHT/violation/person/infer` panel remain, together with traffic-light and
+  person boxes and labels.
+- The Qt memory-buffer path now caches non-transparent row spans whenever a new
+  inference overlay is built, then blends only those spans into each video frame.
+  Opaque destination pixels use an output-equivalent alpha fast path. The DRM
+  file-descriptor path continues to use the existing full-frame RGA blend.
+- Host verification covered exact alpha-result equivalence for opaque
+  destinations, row-span reconstruction, and `git diff --check`. This Windows
+  host has no aarch64 compiler; the final acceptance step is an Ubuntu/aarch64
+  rebuild followed by an RK3568 run confirming lower `Average display
+  convert/overlay`, no overlay failures, and reduced display/Qt back-pressure.
+- The first board retest reduced average traffic overlay time from `22.25 ms`
+  to `17.20 ms` and end-to-end time from `39.58 ms` to `31.21 ms`. Display
+  queue drops fell to 2 over about 82 seconds, but the large translucent ROI
+  remained the dominant overlay cost.
+- The second optimization stage precomputes exact crosswalk scanline spans at
+  renderer initialization. In Qt mode the fixed `RGBA=(20,110,255,72)` ROI is
+  blended directly into each converted video frame; the cached dynamic overlay
+  excludes the ROI fill and retains the ROI border, top status panel, light
+  box, person boxes, and labels. DRM mode still includes the ROI fill in the
+  full overlay passed to RGA.
+- Traffic `person_only` inference now uses a dedicated confidence threshold of
+  `0.50` (the existing postprocess comparison accepts values above it). The
+  eight-class image benchmark remains at `BOX_THRESH=0.25`.
+
+## 2026-07-27 Accelerated-video person box response
+
+- Traffic person tracking was tuned for the accelerated input video without
+  changing the every-second-frame inference schedule: the current detection
+  weight is `0.90` instead of `0.65`, normalized center-distance matching is
+  allowed up to `1.25` instead of `0.75`, and an unmatched box is retained for
+  at most 2 inference frames instead of 8.
+- At the measured inference rate of about `13.4 FPS`, the stale-box retention
+  window is reduced from about `597 ms` to about `149 ms`. The change favors
+  fast visual response while retaining a small amount of smoothing and
+  short-dropout tolerance; it does not increase NPU scheduling or display load.
+
+## 2026-07-27 Independent finetune YOLO Qt demo
+
+- Copied
+  `2_Model_Conversion_PC_Simulation/yolov8/model/finetune_i8.rknn` to
+  `3_NPU_Yolov8_PPOCR_Demo/model/finetune_i8.rknn` without replacing the
+  original `model/yolov8.rknn`.
+- Source and copied finetune artifacts are both 4,634,120 bytes with SHA-256
+  `E11C5A8E69C34EC2FC3DA45C81A070EECC88D177EE75374830D861DCF19CA30F`.
+  The original deployment model remains a distinct 4,633,800-byte file with
+  SHA-256
+  `A60F0FF3006567B122C2B29889A58FE80B6F7BFB41030575A25A8C78A2A2D0EC`.
+- CMake builds `yolov8_ppocr_pcie_qt_ui` once and installs that exact target
+  into both the original and finetune package directories. No C/C++ source or
+  stage-3 `postprocess.h` was changed for the model variant, and duplicate
+  compilation cannot make the two binaries diverge.
+- The finetune package is installed under its own directory. Its
+  `finetune_i8.rknn` is renamed to the runtime contract
+  `model/yolov8.rknn`; therefore both `RunPpocrPcieDemo()` video mode and
+  `RunPpocrPcieImageDemo()` image mode load the finetune model by application
+  directory, while the original package continues to load the original model.
+- `run-finetune-demo.sh` selects only the independent package directory,
+  then reuses the normal X11, display, driver and argument-validation launcher.
+  Running `run-qt-demo.sh` without the finetune wrapper preserves the original
+  directory and executable defaults.
+- The finetune F1-confidence peak is about `0.676` on val and `0.602` on the
+  fixed test split. Per the compatibility-first deployment decision, both
+  executables retain the existing `BOX_THRESH=0.55`; these peaks are recorded
+  for later board-side A/B evaluation and are not applied.
+- Host checks completed: model byte/hash equality, shell syntax with Git Bash,
+  `git diff --check`, and CMake configure parsing through `Configuring done`.
+  An up-to-date existing aarch64 install was also copied into the independent
+  finetune package: both package executables have SHA-256
+  `1F80BA1DED62D8E812A5CCA49F587956E63CF3FAF4AEFCAD1C35F156F719CAA0`,
+  while their YOLO model hashes are intentionally different
+  (`A60F0...D0EC` original versus `E11C5A...A30F` finetune).
+  The local generate step cannot run the ARM Qt `moc` executable on Windows,
+  and no WSL/aarch64 compiler is installed. Future clean-build reproduction
+  still requires Ubuntu/aarch64; RK3568 image/video regression remains required.

@@ -138,6 +138,90 @@ model/yolov8_traffic_i8.rknn
 若先验证非量化模型，把命令中的 `i8` 改成 `fp`，并将输出名改成
 `yolov8_traffic_fp.rknn`。FP 模式不会使用量化数据集。
 
+### 4.2 Finetune 车牌模型 INT8 量化数据集
+
+`python/build_finetune_quant_dataset.py` 从清洗后的
+`yolo_finetune_special/dataset_manifest.tsv` 构建车牌专用校准集。固定种子为
+`20260726`，blue、green、yellow_single 分别从 train 唯一源图抽取 600 张；
+所有包含 `other` 的旧图和新增特殊车牌源图跨 split 全部加入，并按源路径去除
+新增 train 的三份重复样本。
+
+当前输出共 2,561 张：
+
+| 选择桶 | 图片 |
+|---|---:|
+| blue | 600 |
+| green | 600 |
+| yellow_single | 600 |
+| other_all | 761 |
+
+`other_all` 包含旧图 433 张和新增特殊车牌 328 张。761 表示唯一源路径数；旧
+train 内存在 2 组完全相同内容的 `other` 图片，因为要求保留全部旧 `other`，
+这两组没有删除。
+
+2,561 张应作为可复现的校准候选池，不应直接全部交给 RKNN Toolkit2。官方
+2.3.0 文档建议一般校准集使用 20–200 张，其中 KL-Divergence 通常使用
+20–100 张；继续增加图片会增加耗时和内存，并不保证提高精度。2026-07-26 首次
+使用全量 2,561 张执行 KL INT8 时，模型图优化完成，但进程在
+`Quantizating 0/160` 被 Linux 直接杀死，没有 Python 异常，按系统行为判定为
+内存不足。正式量化应从该候选池建立分层的 100–200 条子清单。
+
+旧 4,215 张数据能够完成量化不能直接证明当前 KL 配置也应成功。Git 历史显示，
+旧 `yolov8.rknn` 生成时的 `convert.py` 只配置 `mean/std/target_platform`，
+实际使用 Toolkit 默认 `normal + channel`，且没有启用 `model_pruning`；直到
+2026-07-23 才改成 `kl_divergence + model_pruning=True`。新旧 ONNX 图结构相同，
+本次内存差异主要来自量化算法和剪枝配置，而不是微调模型变大。建议先使用
+`normal + channel + model_pruning=False` 和全量候选池复现旧量化口径；若精度
+不足，再使用 100–200 张分层子清单单独比较 KL，避免同时改变算法、剪枝和数据量。
+
+2026-07-26 通道审计发现首版生成脚本在 `cv2.imwrite()` 前执行 BGR 到 RGB
+转换，导致磁盘 JPEG 红蓝互换。当前版本已去掉该转换，并使用完全相同的 2,561
+条选择名单原位重建。全量图片均可解码且为 `640x640x3`；输出与正常 BGR
+letterbox 的平均绝对像素误差为 `0.90524`，与红蓝交换输入的误差为 `6.32248`，
+通道方向验证通过。当前 `finetune_quant_summary.json` 状态为 `VALID`，可用于
+RKNN Toolkit2 默认 `quant_img_RGB2BGR=False` 的正式量化。
+
+首次生成：
+
+```powershell
+cd D:\Yolo_LPR_RK3568_FPGA_Project
+C:\Users\ZR\.conda\envs\YOLOv8n_LPRNet\python.exe `
+  .\2_Model_Conversion_PC_Simulation\yolov8\python\build_finetune_quant_dataset.py
+```
+
+脚本拒绝覆盖已有输出。生成文件：
+
+```text
+model/finetune_quant_dataset/*.jpg
+model/finetune_quant_dataset.txt
+model/finetune_quant_manifest.tsv
+model/finetune_quant_summary.json
+```
+
+量化 `finetune.onnx` 前，应先建立 100–200 张的分层子清单，再将
+`python/convert.py` 中的校准集和默认输出改为对应子清单。例如生成
+`finetune_quant_dataset_200.txt` 后使用：
+
+```python
+DATASET_PATH = '../model/finetune_quant_dataset_200.txt'
+DEFAULT_RKNN_PATH = '../model/finetune_i8.rknn'
+```
+
+不要修改 `DEFAULT_QUANT = True`、`mean_values/std_values`、
+`quantized_algorithm='kl_divergence'` 或 `model_pruning=True`。建议始终显式传入
+输出路径，避免覆盖旧模型：
+
+```bash
+cd /path/to/Yolo_LPR_RK3568_FPGA_Project/2_Model_Conversion_PC_Simulation/yolov8/python
+python3 convert.py ../model/finetune.onnx rk3568 i8 ../model/finetune_i8.rknn
+```
+
+若先建立非量化转换基线，使用：
+
+```bash
+python3 convert.py ../model/finetune.onnx rk3568 fp ../model/finetune_fp.rknn
+```
+
 
 
 ## 5. Python Demo

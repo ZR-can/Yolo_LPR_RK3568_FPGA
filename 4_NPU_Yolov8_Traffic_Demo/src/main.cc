@@ -352,7 +352,7 @@ int main(int argc, char **argv)
 
     traffic_rknn_app_context_t context;
     std::memset(&context, 0, sizeof(context));
-    context.person_light_only = false;
+    context.person_only = false;
     if (init_traffic_yolov8_model(model_path.c_str(), &context) != 0) {
         deinit_traffic_post_process();
         return EXIT_FAILURE;

@@ -429,9 +429,9 @@ static int convert_image_cpu(image_buffer_t *src, image_buffer_t *dst, image_rec
                 const unsigned char* pixel_data = src_data + (sy * src_stride + sx) * 2;
                 const unsigned short pixel = (unsigned short)pixel_data[0] |
                                              ((unsigned short)pixel_data[1] << 8);
-                const unsigned char red5 = pixel & 0x1f;
+                const unsigned char blue5 = pixel & 0x1f;
                 const unsigned char green6 = (pixel >> 5) & 0x3f;
-                const unsigned char blue5 = (pixel >> 11) & 0x1f;
+                const unsigned char red5 = (pixel >> 11) & 0x1f;
                 dst_row[dx * 3] = (red5 << 3) | (red5 >> 2);
                 dst_row[dx * 3 + 1] = (green6 << 2) | (green6 >> 4);
                 dst_row[dx * 3 + 2] = (blue5 << 3) | (blue5 >> 2);

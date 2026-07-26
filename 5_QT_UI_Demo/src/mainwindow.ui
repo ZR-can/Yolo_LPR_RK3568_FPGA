@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1180</width>
-    <height>680</height>
+    <width>1920</width>
+    <height>1080</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -15,75 +15,236 @@
   </property>
   <widget class="QWidget" name="centralWidget">
    <layout class="QHBoxLayout" name="rootLayout">
-    <property name="leftMargin"><number>8</number></property>
-    <property name="topMargin"><number>8</number></property>
-    <property name="rightMargin"><number>8</number></property>
-    <property name="bottomMargin"><number>8</number></property>
-    <property name="spacing"><number>8</number></property>
+    <property name="leftMargin"><number>0</number></property>
+    <property name="topMargin"><number>0</number></property>
+    <property name="rightMargin"><number>0</number></property>
+    <property name="bottomMargin"><number>0</number></property>
+    <property name="spacing"><number>0</number></property>
     <item>
-     <widget class="QLabel" name="videoLabel">
+     <widget class="QWidget" name="leftPanel">
       <property name="minimumSize">
-       <size><width>760</width><height>420</height></size>
+       <size><width>1280</width><height>1080</height></size>
       </property>
-      <property name="text">
-       <string>等待图像</string>
+      <property name="maximumSize">
+       <size><width>1280</width><height>1080</height></size>
       </property>
-      <property name="alignment">
-       <set>Qt::AlignCenter</set>
-      </property>
+      <layout class="QVBoxLayout" name="leftLayout">
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+       <property name="spacing"><number>0</number></property>
+       <item>
+        <widget class="QLabel" name="videoLabel">
+         <property name="minimumSize">
+          <size><width>1280</width><height>720</height></size>
+         </property>
+         <property name="maximumSize">
+          <size><width>1280</width><height>720</height></size>
+         </property>
+         <property name="text">
+          <string>等待图像</string>
+         </property>
+         <property name="alignment">
+          <set>Qt::AlignCenter</set>
+         </property>
+         <property name="scaledContents">
+          <bool>false</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QWidget" name="leftBottomPanel">
+         <property name="minimumSize">
+          <size><width>1280</width><height>360</height></size>
+         </property>
+         <property name="maximumSize">
+          <size><width>1280</width><height>360</height></size>
+         </property>
+         <layout class="QVBoxLayout" name="leftBottomLayout">
+          <property name="leftMargin"><number>12</number></property>
+          <property name="topMargin"><number>12</number></property>
+          <property name="rightMargin"><number>12</number></property>
+          <property name="bottomMargin"><number>12</number></property>
+          <property name="spacing"><number>10</number></property>
+          <item>
+           <widget class="QWidget" name="statusRowPanel">
+            <property name="minimumSize">
+             <size><width>0</width><height>154</height></size>
+            </property>
+            <property name="maximumSize">
+             <size><width>16777215</width><height>154</height></size>
+            </property>
+            <layout class="QHBoxLayout" name="statusRowLayout">
+             <property name="leftMargin"><number>0</number></property>
+             <property name="topMargin"><number>0</number></property>
+             <property name="rightMargin"><number>0</number></property>
+             <property name="bottomMargin"><number>0</number></property>
+             <property name="spacing"><number>12</number></property>
+             <item>
+              <widget class="QGroupBox" name="runtimeGroup">
+               <property name="title">
+                <string>运行状态</string>
+               </property>
+               <layout class="QGridLayout" name="runtimeGrid">
+                <property name="leftMargin"><number>14</number></property>
+                <property name="topMargin"><number>14</number></property>
+                <property name="rightMargin"><number>14</number></property>
+                <property name="bottomMargin"><number>10</number></property>
+                <property name="horizontalSpacing"><number>24</number></property>
+                <property name="verticalSpacing"><number>2</number></property>
+                <item row="0" column="0">
+                 <widget class="QLabel" name="stateKeyLabel">
+                  <property name="text"><string>状态</string></property>
+                 </widget>
+                </item>
+                <item row="0" column="1">
+                 <widget class="QLabel" name="stateValueLabel">
+                  <property name="text"><string>空闲</string></property>
+                  <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
+                 </widget>
+                </item>
+                <item row="1" column="0">
+                 <widget class="QLabel" name="fpsKeyLabel">
+                  <property name="text"><string>PCIe采集</string></property>
+                 </widget>
+                </item>
+                <item row="1" column="1">
+                 <widget class="QLabel" name="fpsValueLabel">
+                  <property name="text"><string>--</string></property>
+                  <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
+                 </widget>
+                </item>
+                <item row="2" column="0">
+                 <widget class="QLabel" name="capturedKeyLabel">
+                  <property name="text"><string>屏幕显示</string></property>
+                 </widget>
+                </item>
+                <item row="2" column="1">
+                 <widget class="QLabel" name="capturedValueLabel">
+                  <property name="text"><string>--</string></property>
+                  <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
+                 </widget>
+                </item>
+                <item row="3" column="0">
+                 <widget class="QLabel" name="inferenceKeyLabel">
+                  <property name="text"><string>模型推理</string></property>
+                 </widget>
+                </item>
+                <item row="3" column="1">
+                 <widget class="QLabel" name="inferenceValueLabel">
+                  <property name="text"><string>--</string></property>
+                  <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
+                 </widget>
+                </item>
+                <item row="4" column="0">
+                 <widget class="QLabel" name="latencyKeyLabel">
+                  <property name="text"><string>端到端延迟</string></property>
+                 </widget>
+                </item>
+                <item row="4" column="1">
+                 <widget class="QLabel" name="latencyValueLabel">
+                  <property name="text"><string>--</string></property>
+                  <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
+              <widget class="QGroupBox" name="pcieGroup">
+               <property name="title">
+                <string>PCIe 状态</string>
+               </property>
+               <layout class="QGridLayout" name="pcieGrid">
+                <property name="leftMargin"><number>14</number></property>
+                <property name="topMargin"><number>16</number></property>
+                <property name="rightMargin"><number>14</number></property>
+                <property name="bottomMargin"><number>12</number></property>
+                <property name="horizontalSpacing"><number>24</number></property>
+                <property name="verticalSpacing"><number>8</number></property>
+                <item row="0" column="0">
+                 <widget class="QLabel" name="deviceKeyLabel">
+                  <property name="text"><string>设备</string></property>
+                 </widget>
+                </item>
+                <item row="0" column="1">
+                 <widget class="QLabel" name="deviceValueLabel">
+                  <property name="text"><string>--</string></property>
+                  <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
+                 </widget>
+                </item>
+                <item row="1" column="0">
+                 <widget class="QLabel" name="linkKeyLabel">
+                  <property name="text"><string>链路</string></property>
+                 </widget>
+                </item>
+                <item row="1" column="1">
+                 <widget class="QLabel" name="linkValueLabel">
+                  <property name="text"><string>--</string></property>
+                  <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
+                 </widget>
+                </item>
+                <item row="2" column="0">
+                 <widget class="QLabel" name="payloadKeyLabel">
+                  <property name="text"><string>最大负载</string></property>
+                 </widget>
+                </item>
+                <item row="2" column="1">
+                 <widget class="QLabel" name="payloadValueLabel">
+                  <property name="text"><string>--</string></property>
+                  <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QGroupBox" name="systemMonitorGroup">
+            <property name="title">
+             <string>系统资源（最近60秒）</string>
+            </property>
+            <layout class="QVBoxLayout" name="systemMonitorLayout">
+             <property name="leftMargin"><number>8</number></property>
+             <property name="topMargin"><number>16</number></property>
+             <property name="rightMargin"><number>8</number></property>
+             <property name="bottomMargin"><number>8</number></property>
+             <item>
+              <widget class="SystemMonitorWidget" name="systemMonitorWidget"/>
+             </item>
+            </layout>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+      </layout>
      </widget>
     </item>
     <item>
      <widget class="QWidget" name="sidePanel">
       <property name="minimumSize">
-       <size><width>340</width><height>0</height></size>
+       <size><width>640</width><height>1080</height></size>
       </property>
       <property name="maximumSize">
-       <size><width>340</width><height>16777215</height></size>
+       <size><width>640</width><height>1080</height></size>
       </property>
       <layout class="QVBoxLayout" name="sideLayout">
-       <property name="leftMargin"><number>0</number></property>
-       <property name="topMargin"><number>0</number></property>
-       <property name="rightMargin"><number>0</number></property>
-       <property name="bottomMargin"><number>0</number></property>
-       <property name="spacing"><number>8</number></property>
+       <property name="leftMargin"><number>20</number></property>
+       <property name="topMargin"><number>16</number></property>
+       <property name="rightMargin"><number>20</number></property>
+       <property name="bottomMargin"><number>16</number></property>
+       <property name="spacing"><number>10</number></property>
        <item>
-        <layout class="QHBoxLayout" name="headerLayout">
-         <property name="spacing"><number>8</number></property>
-         <item>
-          <widget class="QLabel" name="titleLabel">
-           <property name="text">
-            <string>智能交通视觉分析</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <spacer name="headerSpacer">
-           <property name="orientation"><enum>Qt::Horizontal</enum></property>
-           <property name="sizeHint" stdset="0">
-            <size><width>20</width><height>20</height></size>
-           </property>
-          </spacer>
-         </item>
-         <item>
-          <widget class="QComboBox" name="modeComboBox">
-           <item>
-            <property name="text"><string>视频识别</string></property>
-           </item>
-           <item>
-            <property name="text"><string>图片识别</string></property>
-           </item>
-           <item>
-            <property name="text"><string>行人违法检测</string></property>
-           </item>
-          </widget>
-         </item>
-        </layout>
-       </item>
-       <item>
-        <widget class="QLabel" name="modeBadgeLabel">
+        <widget class="QLabel" name="titleLabel">
+         <property name="minimumSize">
+          <size><width>0</width><height>52</height></size>
+         </property>
          <property name="text">
-          <string>当前模式：视频识别</string>
+          <string>视频车牌识别</string>
          </property>
          <property name="alignment">
           <set>Qt::AlignCenter</set>
@@ -91,70 +252,43 @@
         </widget>
        </item>
        <item>
-        <widget class="QGroupBox" name="runtimeGroup">
+        <widget class="QGroupBox" name="modeGroup">
          <property name="title">
-          <string>运行状态</string>
+          <string>模式选择</string>
          </property>
-         <layout class="QGridLayout" name="runtimeGrid">
-          <property name="leftMargin"><number>8</number></property>
-          <property name="topMargin"><number>8</number></property>
-          <property name="rightMargin"><number>8</number></property>
-          <property name="bottomMargin"><number>8</number></property>
-          <property name="horizontalSpacing"><number>8</number></property>
-          <property name="verticalSpacing"><number>6</number></property>
-          <item row="0" column="0">
-           <widget class="QLabel" name="stateKeyLabel">
-            <property name="text"><string>状态</string></property>
+         <layout class="QVBoxLayout" name="modeLayout">
+          <property name="leftMargin"><number>12</number></property>
+          <property name="topMargin"><number>14</number></property>
+          <property name="rightMargin"><number>12</number></property>
+          <property name="bottomMargin"><number>12</number></property>
+          <property name="spacing"><number>10</number></property>
+          <item>
+           <widget class="QLabel" name="modeBadgeLabel">
+            <property name="minimumSize">
+             <size><width>0</width><height>44</height></size>
+            </property>
+            <property name="text">
+             <string>当前模式：视频识别</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
            </widget>
           </item>
-          <item row="0" column="1">
-           <widget class="QLabel" name="stateValueLabel">
-            <property name="text"><string>空闲</string></property>
-            <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
-           </widget>
-          </item>
-          <item row="1" column="0">
-           <widget class="QLabel" name="fpsKeyLabel">
-            <property name="text"><string>PCIe采集</string></property>
-           </widget>
-          </item>
-          <item row="1" column="1">
-           <widget class="QLabel" name="fpsValueLabel">
-            <property name="text"><string>--</string></property>
-            <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
-           </widget>
-          </item>
-          <item row="2" column="0">
-           <widget class="QLabel" name="capturedKeyLabel">
-            <property name="text"><string>屏幕显示</string></property>
-           </widget>
-          </item>
-          <item row="2" column="1">
-           <widget class="QLabel" name="capturedValueLabel">
-            <property name="text"><string>--</string></property>
-            <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
-           </widget>
-          </item>
-          <item row="3" column="0">
-           <widget class="QLabel" name="inferenceKeyLabel">
-            <property name="text"><string>模型推理</string></property>
-           </widget>
-          </item>
-          <item row="3" column="1">
-           <widget class="QLabel" name="inferenceValueLabel">
-            <property name="text"><string>--</string></property>
-            <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
-           </widget>
-          </item>
-          <item row="4" column="0">
-           <widget class="QLabel" name="latencyKeyLabel">
-            <property name="text"><string>端到端延迟</string></property>
-           </widget>
-          </item>
-          <item row="4" column="1">
-           <widget class="QLabel" name="latencyValueLabel">
-            <property name="text"><string>--</string></property>
-            <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
+          <item>
+           <widget class="QComboBox" name="modeComboBox">
+            <property name="minimumSize">
+             <size><width>0</width><height>44</height></size>
+            </property>
+            <item>
+             <property name="text"><string>视频识别</string></property>
+            </item>
+            <item>
+             <property name="text"><string>图片识别</string></property>
+            </item>
+            <item>
+             <property name="text"><string>行人违法检测</string></property>
+            </item>
            </widget>
           </item>
          </layout>
@@ -166,32 +300,26 @@
           <string>识别结果</string>
          </property>
          <layout class="QVBoxLayout" name="resultLayout">
-          <property name="leftMargin"><number>8</number></property>
-          <property name="topMargin"><number>8</number></property>
-          <property name="rightMargin"><number>8</number></property>
-          <property name="bottomMargin"><number>8</number></property>
+          <property name="leftMargin"><number>10</number></property>
+          <property name="topMargin"><number>14</number></property>
+          <property name="rightMargin"><number>10</number></property>
+          <property name="bottomMargin"><number>10</number></property>
           <item>
            <widget class="QTableWidget" name="resultTableWidget">
             <property name="minimumSize">
-             <size><width>0</width><height>210</height></size>
+             <size><width>0</width><height>420</height></size>
             </property>
             <property name="columnCount">
              <number>3</number>
             </property>
             <column>
-             <property name="text">
-              <string>车牌</string>
-             </property>
+             <property name="text"><string>车牌</string></property>
             </column>
             <column>
-             <property name="text">
-              <string>类型</string>
-             </property>
+             <property name="text"><string>类型</string></property>
             </column>
             <column>
-             <property name="text">
-              <string>置信度</string>
-             </property>
+             <property name="text"><string>置信度</string></property>
             </column>
            </widget>
           </item>
@@ -199,92 +327,75 @@
         </widget>
        </item>
        <item>
-        <widget class="QGroupBox" name="pcieGroup">
+        <widget class="QGroupBox" name="messageGroup">
          <property name="title">
-          <string>PCIe 状态</string>
+          <string>运行提示</string>
          </property>
-         <layout class="QGridLayout" name="pcieGrid">
-          <property name="leftMargin"><number>8</number></property>
-          <property name="topMargin"><number>8</number></property>
-          <property name="rightMargin"><number>8</number></property>
-          <property name="bottomMargin"><number>8</number></property>
-          <property name="horizontalSpacing"><number>8</number></property>
-          <property name="verticalSpacing"><number>6</number></property>
-          <item row="0" column="0">
-           <widget class="QLabel" name="deviceKeyLabel">
-            <property name="text"><string>设备</string></property>
-           </widget>
-          </item>
-          <item row="0" column="1">
-           <widget class="QLabel" name="deviceValueLabel">
-            <property name="text"><string>--</string></property>
-            <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
-           </widget>
-          </item>
-          <item row="1" column="0">
-           <widget class="QLabel" name="linkKeyLabel">
-            <property name="text"><string>链路</string></property>
-           </widget>
-          </item>
-          <item row="1" column="1">
-           <widget class="QLabel" name="linkValueLabel">
-            <property name="text"><string>--</string></property>
-            <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
-           </widget>
-          </item>
-          <item row="2" column="0">
-           <widget class="QLabel" name="payloadKeyLabel">
-            <property name="text"><string>最大负载</string></property>
-           </widget>
-          </item>
-          <item row="2" column="1">
-           <widget class="QLabel" name="payloadValueLabel">
-            <property name="text"><string>--</string></property>
-            <property name="alignment"><set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set></property>
+         <layout class="QVBoxLayout" name="messageLayout">
+          <property name="leftMargin"><number>10</number></property>
+          <property name="topMargin"><number>14</number></property>
+          <property name="rightMargin"><number>10</number></property>
+          <property name="bottomMargin"><number>10</number></property>
+          <item>
+           <widget class="QLabel" name="operationMessageLabel">
+            <property name="minimumSize">
+             <size><width>0</width><height>66</height></size>
+            </property>
+            <property name="text">
+             <string>等待PCIe帧数据</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
+            <property name="wordWrap">
+             <bool>true</bool>
+            </property>
            </widget>
           </item>
          </layout>
         </widget>
        </item>
        <item>
-        <spacer name="bottomSpacer">
-         <property name="orientation"><enum>Qt::Vertical</enum></property>
-         <property name="sizeType"><enum>QSizePolicy::Expanding</enum></property>
-         <property name="sizeHint" stdset="0">
-          <size><width>20</width><height>8</height></size>
-         </property>
-        </spacer>
-       </item>
-       <item>
-        <widget class="QPushButton" name="startButton">
-         <property name="minimumSize">
-          <size><width>0</width><height>40</height></size>
-         </property>
-         <property name="text">
-          <string>开始</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QPushButton" name="saveButton">
-         <property name="minimumSize">
-          <size><width>0</width><height>40</height></size>
-         </property>
-         <property name="text">
-          <string>保存图片</string>
-         </property>
-         <property name="enabled">
-          <bool>false</bool>
-         </property>
-        </widget>
+        <layout class="QHBoxLayout" name="buttonLayout">
+         <property name="spacing"><number>12</number></property>
+         <item>
+          <widget class="QPushButton" name="startButton">
+           <property name="minimumSize">
+            <size><width>0</width><height>56</height></size>
+           </property>
+           <property name="text">
+            <string>开始</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="saveButton">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="minimumSize">
+            <size><width>0</width><height>56</height></size>
+           </property>
+           <property name="text">
+            <string>保存图片</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
        </item>
       </layout>
      </widget>
     </item>
    </layout>
   </widget>
-  <widget class="QStatusBar" name="statusbar"/>
  </widget>
+ <customwidgets>
+  <customwidget>
+   <class>SystemMonitorWidget</class>
+   <extends>QWidget</extends>
+   <header>system_monitor_widget.h</header>
+  </customwidget>
+ </customwidgets>
  <resources/>
  <connections/>
 </ui>

@@ -14,6 +14,7 @@
 #define TRAFFIC_LIGHT_CLASS_ID 6
 #define NMS_THRESH 0.5f
 #define BOX_THRESH 0.25f
+#define TRAFFIC_PERSON_BOX_THRESH 0.50f
 
 // traffic_rknn_app_context_t is declared by yolov8.h before this header.
 

@@ -305,16 +305,6 @@ void UpdateLatestPlateObservation(TrackedPlate* track,
 
 }  // namespace
 
-void build_single_inference_plate_results(
-    const std::vector<PipelineResult>& detections,
-    std::vector<PipelineResult>& out_results) {
-    out_results = detections;
-    for (PipelineResult& result : out_results) {
-        result.has_valid_plate_text =
-            is_valid_ga36_plate(result.plate_name, result.plate_type);
-    }
-}
-
 SimplePlateTracker::SimplePlateTracker() = default;
 
 void SimplePlateTracker::reset() {
@@ -380,17 +370,159 @@ float SimplePlateTracker::compute_similarity(const TrackedPlate& track, const Pi
     return (diou + 1.0f) / 2.0f;
 }
 
+bool SimplePlateTracker::is_fast_motion_initial_match(
+    const TrackedPlate& track,
+    const PipelineResult& det,
+    float similarity) const {
+    if (track.hit_streak >= min_hits_ ||
+        similarity <= initial_match_threshold_) {
+        return false;
+    }
+
+    const float det_w = static_cast<float>(det.right - det.left);
+    const float det_h = static_cast<float>(det.bottom - det.top);
+    if (track.w <= 0.0f || track.h <= 0.0f ||
+        det_w <= 0.0f || det_h <= 0.0f) {
+        return false;
+    }
+
+    const float width_ratio =
+        std::min(track.w, det_w) / std::max(track.w, det_w);
+    const float height_ratio =
+        std::min(track.h, det_h) / std::max(track.h, det_h);
+    return std::min(width_ratio, height_ratio) >=
+           initial_match_min_size_ratio_;
+}
+
+void SimplePlateTracker::clamp_acceleration(TrackedPlate* track) const {
+    if (track == nullptr) {
+        return;
+    }
+    const float center_limit =
+        acceleration_limit_ratio_ * std::max(track->w, track->h);
+    const float width_limit =
+        acceleration_limit_ratio_ * std::max(1.0f, track->w);
+    const float height_limit =
+        acceleration_limit_ratio_ * std::max(1.0f, track->h);
+    track->ax = std::max(-center_limit, std::min(track->ax, center_limit));
+    track->ay = std::max(-center_limit, std::min(track->ay, center_limit));
+    track->aw = std::max(-width_limit, std::min(track->aw, width_limit));
+    track->ah = std::max(-height_limit, std::min(track->ah, height_limit));
+}
+
+void SimplePlateTracker::advance_motion_state(
+    TrackedPlate* track,
+    int dt) const {
+    if (track == nullptr || dt <= 0) {
+        return;
+    }
+    const float elapsed = static_cast<float>(dt);
+    const float half_elapsed_sq = 0.5f * elapsed * elapsed;
+    track->cx += track->vx * elapsed + track->ax * half_elapsed_sq;
+    track->cy += track->vy * elapsed + track->ay * half_elapsed_sq;
+    track->w = std::max(
+        1.0f, track->w + track->vw * elapsed + track->aw * half_elapsed_sq);
+    track->h = std::max(
+        1.0f, track->h + track->vh * elapsed + track->ah * half_elapsed_sq);
+    track->vx += track->ax * elapsed;
+    track->vy += track->ay * elapsed;
+    track->vw += track->aw * elapsed;
+    track->vh += track->ah * elapsed;
+}
+
+void SimplePlateTracker::update_motion_from_observation(
+    TrackedPlate* track,
+    const PipelineResult& det,
+    int frame_id) const {
+    if (track == nullptr) {
+        return;
+    }
+
+    const float det_w = static_cast<float>(det.right - det.left);
+    const float det_h = static_cast<float>(det.bottom - det.top);
+    const float det_cx = static_cast<float>(det.left) + det_w / 2.0f;
+    const float det_cy = static_cast<float>(det.top) + det_h / 2.0f;
+
+    const float res_cx = det_cx - track->cx;
+    const float res_cy = det_cy - track->cy;
+    const float res_w = det_w - track->w;
+    const float res_h = det_h - track->h;
+    track->cx += position_gain_ * res_cx;
+    track->cy += position_gain_ * res_cy;
+    track->w += position_gain_ * res_w;
+    track->h += position_gain_ * res_h;
+
+    if (track->last_observation_frame_id >= 0) {
+        const int observation_dt =
+            std::max(1, frame_id - track->last_observation_frame_id);
+        const float inverse_dt =
+            1.0f / static_cast<float>(observation_dt);
+        const float measured_vx =
+            (det_cx - track->observed_cx) * inverse_dt;
+        const float measured_vy =
+            (det_cy - track->observed_cy) * inverse_dt;
+        const float measured_vw =
+            (det_w - track->observed_w) * inverse_dt;
+        const float measured_vh =
+            (det_h - track->observed_h) * inverse_dt;
+
+        const float measured_ax =
+            (measured_vx - track->observed_vx) * inverse_dt;
+        const float measured_ay =
+            (measured_vy - track->observed_vy) * inverse_dt;
+        const float measured_aw =
+            (measured_vw - track->observed_vw) * inverse_dt;
+        const float measured_ah =
+            (measured_vh - track->observed_vh) * inverse_dt;
+
+        track->vx =
+            (1.0f - velocity_gain_) * track->vx +
+            velocity_gain_ * measured_vx;
+        track->vy =
+            (1.0f - velocity_gain_) * track->vy +
+            velocity_gain_ * measured_vy;
+        track->vw =
+            (1.0f - velocity_gain_) * track->vw +
+            velocity_gain_ * measured_vw;
+        track->vh =
+            (1.0f - velocity_gain_) * track->vh +
+            velocity_gain_ * measured_vh;
+
+        track->ax =
+            (1.0f - acceleration_gain_) * track->ax +
+            acceleration_gain_ * measured_ax;
+        track->ay =
+            (1.0f - acceleration_gain_) * track->ay +
+            acceleration_gain_ * measured_ay;
+        track->aw =
+            (1.0f - acceleration_gain_) * track->aw +
+            acceleration_gain_ * measured_aw;
+        track->ah =
+            (1.0f - acceleration_gain_) * track->ah +
+            acceleration_gain_ * measured_ah;
+        clamp_acceleration(track);
+
+        track->observed_vx = measured_vx;
+        track->observed_vy = measured_vy;
+        track->observed_vw = measured_vw;
+        track->observed_vh = measured_vh;
+    }
+
+    track->last_observation_frame_id = frame_id;
+    track->observed_cx = det_cx;
+    track->observed_cy = det_cy;
+    track->observed_w = det_w;
+    track->observed_h = det_h;
+}
+
 void SimplePlateTracker::update(const std::vector<PipelineResult>& detections, int frame_id) {
     int dt = (last_frame_id_ < 0) ? 1 : (frame_id - last_frame_id_);
     if (dt < 1) dt = 1;
     last_frame_id_ = frame_id;
 
-    // 1. 状态预测 (使用等速运动模型)
+    // 1. 使用速度和受限加速度把状态推进到当前结果帧。
     for (auto& track : tracks_) {
-        track.cx += track.vx * dt;
-        track.cy += track.vy * dt;
-        track.w  += track.vw * dt;
-        track.h  += track.vh * dt;
+        advance_motion_state(&track, dt);
         track.time_since_update += dt;
     }
 
@@ -400,9 +532,14 @@ void SimplePlateTracker::update(const std::vector<PipelineResult>& detections, i
     matches.reserve(tracks_.size() * detections.size());
 
     for (size_t t = 0; t < tracks_.size(); ++t) {
+        if (tracks_[t].time_since_update > max_age_frames_) {
+            continue;
+        }
         for (size_t d = 0; d < detections.size(); ++d) {
             float score = compute_similarity(tracks_[t], detections[d]);
-            if (score > match_threshold_) {
+            if (score > match_threshold_ ||
+                is_fast_motion_initial_match(
+                    tracks_[t], detections[d], score)) {
                 matches.push_back({static_cast<int>(t), static_cast<int>(d), score});
             }
         }
@@ -416,7 +553,7 @@ void SimplePlateTracker::update(const std::vector<PipelineResult>& detections, i
     std::vector<bool> det_matched(detections.size(), false);
     std::vector<bool> track_matched(tracks_.size(), false);
 
-    // 3. 执行匹配与状态更新 (Alpha-Beta 滤波)
+    // 3. 执行匹配，并用真实观测间隔更新速度与加速度。
     for (const auto& m : matches) {
         if (!det_matched[m.det_idx] && !track_matched[m.trk_idx]) {
             det_matched[m.det_idx] = true;
@@ -425,27 +562,7 @@ void SimplePlateTracker::update(const std::vector<PipelineResult>& detections, i
             TrackedPlate& tk = tracks_[m.trk_idx];
             const auto& det = detections[m.det_idx];
 
-            float det_w = det.right - det.left;
-            float det_h = det.bottom - det.top;
-            float det_cx = det.left + det_w / 2.0f;
-            float det_cy = det.top + det_h / 2.0f;
-
-            // 计算测量残差
-            float res_cx = det_cx - tk.cx;
-            float res_cy = det_cy - tk.cy;
-            float res_w  = det_w - tk.w;
-            float res_h  = det_h - tk.h;
-
-            // 应用 Alpha-Beta 方程更新状态和速度
-            tk.cx += alpha_ * res_cx;
-            tk.cy += alpha_ * res_cy;
-            tk.w  += alpha_ * res_w;
-            tk.h  += alpha_ * res_h;
-
-            tk.vx += (beta_ / dt) * res_cx;
-            tk.vy += (beta_ / dt) * res_cy;
-            tk.vw += (beta_ / dt) * res_w;
-            tk.vh += (beta_ / dt) * res_h;
+            update_motion_from_observation(&tk, det, frame_id);
 
             // 更新属性与投票
             tk.time_since_update = 0;
@@ -477,6 +594,11 @@ void SimplePlateTracker::update(const std::vector<PipelineResult>& detections, i
             new_tk.h = det.bottom - det.top;
             new_tk.cx = det.left + new_tk.w / 2.0f;
             new_tk.cy = det.top + new_tk.h / 2.0f;
+            new_tk.last_observation_frame_id = frame_id;
+            new_tk.observed_cx = new_tk.cx;
+            new_tk.observed_cy = new_tk.cy;
+            new_tk.observed_w = new_tk.w;
+            new_tk.observed_h = new_tk.h;
             
             new_tk.confidence = det.confidence;
             new_tk.text_confidence = det.text_confidence;
@@ -503,17 +625,22 @@ void SimplePlateTracker::predict(int frame_id, std::vector<PipelineResult>& out_
     out_results.clear();
     
     int dt = (last_frame_id_ < 0) ? 0 : (frame_id - last_frame_id_);
+    if (dt < 0) {
+        dt = 0;
+    }
 
     for (const auto& track : tracks_) {
-        // 仅输出当前帧存活且生命周期达到阈值的稳定目标（防止噪点闪烁）
-        if (track.time_since_update == 0 && track.hit_streak >= min_hits_) {
+        const int prediction_age = track.time_since_update + dt;
+        // 已确认轨迹允许跨越短检测空窗；显示帧过旧时仍会及时隐藏。
+        if (prediction_age <= max_age_frames_ &&
+            track.hit_streak >= min_hits_) {
             PipelineResult res;
-            
-            // 结合速度向量进行渲染预测补偿
-            float pred_cx = track.cx + track.vx * dt;
-            float pred_cy = track.cy + track.vy * dt;
-            float pred_w  = track.w + track.vw * dt;
-            float pred_h  = track.h + track.vh * dt;
+            TrackedPlate predicted = track;
+            advance_motion_state(&predicted, dt);
+            const float pred_cx = predicted.cx;
+            const float pred_cy = predicted.cy;
+            const float pred_w = predicted.w;
+            const float pred_h = predicted.h;
 
             res.left   = static_cast<int>(pred_cx - pred_w / 2.0f + 0.5f);
             res.top    = static_cast<int>(pred_cy - pred_h / 2.0f + 0.5f);

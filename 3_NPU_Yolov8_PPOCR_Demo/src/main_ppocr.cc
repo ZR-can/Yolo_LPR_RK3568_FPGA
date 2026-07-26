@@ -20,6 +20,7 @@
 #include "pcie_frame_source.h"
 #include "rga_overlay_renderer.h"
 #include "simple_tracker.h"
+#include "static_image_change_detector.h"
 #include "yolo_ppocr_pipeline.h"
 
 namespace {
@@ -77,9 +78,13 @@ struct PcieFrame {
     std::vector<unsigned char> pixels;
     int frame_id;
     uint64_t enqueue_ms;
+    uint64_t image_generation;
 
     PcieFrame()
-        : pixels(PcieFrameSource::kFrameBytes), frame_id(-1), enqueue_ms(0) {}
+        : pixels(PcieFrameSource::kFrameBytes),
+          frame_id(-1),
+          enqueue_ms(0),
+          image_generation(0) {}
 };
 
 class FramePool {
@@ -163,9 +168,10 @@ private:
 struct LatestPipelineResult {
     std::vector<PipelineResult> results;
     int frame_id;
+    uint64_t image_generation;
     std::mutex mutex;
 
-    LatestPipelineResult() : frame_id(-1) {}
+    LatestPipelineResult() : frame_id(-1), image_generation(0) {}
 };
 
 struct PciePerformance {
@@ -183,6 +189,10 @@ struct PciePerformance {
     double overlay_ms;
     double present_ms;
     double end_to_end_ms;
+    double image_change_detection_ms;
+    uint64_t tracker_result_lag_samples;
+    uint64_t tracker_result_lag_frames;
+    int tracker_max_result_lag_frames;
 
     PciePerformance()
         : captured_frames(0),
@@ -198,7 +208,11 @@ struct PciePerformance {
           display_convert_ms(0.0),
           overlay_ms(0.0),
           present_ms(0.0),
-          end_to_end_ms(0.0) {}
+          end_to_end_ms(0.0),
+          image_change_detection_ms(0.0),
+          tracker_result_lag_samples(0),
+          tracker_result_lag_frames(0),
+          tracker_max_result_lag_frames(0) {}
 };
 
 struct PcieAppContext {
@@ -207,16 +221,18 @@ struct PcieAppContext {
     bool drm_initialized;
     RgaOverlayRenderer overlay_renderer;
     SimplePlateTracker tracker;
-    bool immediate_plate_results;
+    bool image_mode;
+    uint64_t active_image_generation;
     int last_result_frame_id;
     LatestFrameQueue display_queue;
     LatestFrameQueue inference_queue;
     LatestPipelineResult latest_result;
     PciePerformance performance;
 
-    explicit PcieAppContext(bool use_immediate_plate_results)
+    explicit PcieAppContext(bool use_image_mode)
         : drm_initialized(false),
-          immediate_plate_results(use_immediate_plate_results),
+          image_mode(use_image_mode),
+          active_image_generation(0),
           last_result_frame_id(-1),
           display_queue(kDisplayQueueCapacity),
           inference_queue(kInferenceQueueCapacity) {}
@@ -238,31 +254,50 @@ image_buffer_t MakeBgr565Image(PcieFrame* frame) {
 
 std::vector<PipelineResult> BuildDisplayResults(PcieAppContext* context,
                                                 int display_frame_id,
+                                                uint64_t display_image_generation,
                                                 int display_width,
                                                 int display_height) {
     std::vector<PipelineResult> current_results;
     int result_frame_id = -1;
+    uint64_t result_image_generation = 0;
     {
         std::lock_guard<std::mutex> lock(context->latest_result.mutex);
         current_results = context->latest_result.results;
         result_frame_id = context->latest_result.frame_id;
+        result_image_generation = context->latest_result.image_generation;
     }
 
-    if (result_frame_id >= 0 && result_frame_id != context->last_result_frame_id) {
-        if (!context->immediate_plate_results) {
-            context->tracker.update(current_results, result_frame_id);
+    if (context->image_mode &&
+        display_image_generation != context->active_image_generation) {
+        context->tracker.reset();
+        context->active_image_generation = display_image_generation;
+        context->last_result_frame_id = -1;
+    }
+
+    const bool result_matches_display_image =
+        !context->image_mode ||
+        result_image_generation == display_image_generation;
+    if (result_matches_display_image &&
+        result_frame_id >= 0 &&
+        result_frame_id != context->last_result_frame_id) {
+        if (!context->image_mode) {
+            const int result_lag_frames =
+                std::max(0, display_frame_id - result_frame_id);
+            ++context->performance.tracker_result_lag_samples;
+            context->performance.tracker_result_lag_frames +=
+                static_cast<uint64_t>(result_lag_frames);
+            context->performance.tracker_max_result_lag_frames =
+                std::max(
+                    context->performance.tracker_max_result_lag_frames,
+                    result_lag_frames);
         }
+        context->tracker.update(current_results, result_frame_id);
         context->last_result_frame_id = result_frame_id;
         context->performance.plate_results.fetch_add(current_results.size());
     }
 
     std::vector<PipelineResult> tracked_results;
-    if (context->immediate_plate_results) {
-        build_single_inference_plate_results(
-            current_results, tracked_results);
-    } else {
-        context->tracker.predict(display_frame_id, tracked_results);
-    }
+    context->tracker.predict(display_frame_id, tracked_results);
 
     const float scale_x = (float)display_width / PcieFrameSource::kFrameWidth;
     const float scale_y = (float)display_height / PcieFrameSource::kFrameHeight;
@@ -336,6 +371,8 @@ void InferenceThread(PcieAppContext* context) {
             std::lock_guard<std::mutex> lock(context->latest_result.mutex);
             context->latest_result.results.swap(results);
             context->latest_result.frame_id = frame->frame_id;
+            context->latest_result.image_generation =
+                frame->image_generation;
             ++context->performance.inference_jobs;
         } else {
             ++context->performance.inference_failures;
@@ -390,7 +427,11 @@ void DisplayThread(PcieAppContext* context, const PcieUiCallbacks* callbacks,
 
             begin = std::chrono::steady_clock::now();
             const std::vector<PipelineResult> display_results =
-                BuildDisplayResults(context, frame->frame_id, ui_buffer.width, ui_buffer.height);
+                BuildDisplayResults(context,
+                                    frame->frame_id,
+                                    frame->image_generation,
+                                    ui_buffer.width,
+                                    ui_buffer.height);
             if (context->overlay_renderer.Render(&ui_buffer, display_results, false) != 0) {
                 ++context->performance.overlay_failures;
             }
@@ -402,19 +443,32 @@ void DisplayThread(PcieAppContext* context, const PcieUiCallbacks* callbacks,
             std::string plate_text;
             std::string plate_type;
             float plate_confidence = 0.0f;
+            std::vector<PcieUiPlateResult> image_plate_results;
             for (const PipelineResult& result : display_results) {
                 if (result.has_valid_plate_text && !result.plate_name.empty()) {
-                    plate_text = result.plate_name;
-                    plate_type = result.plate_type;
-                    plate_confidence = result.text_confidence > 0.0f
-                                           ? result.text_confidence
-                                           : result.confidence;
-                    break;
+                    const float confidence =
+                        result.text_confidence > 0.0f
+                            ? result.text_confidence
+                            : result.confidence;
+                    if (plate_text.empty()) {
+                        plate_text = result.plate_name;
+                        plate_type = result.plate_type;
+                        plate_confidence = confidence;
+                    }
+                    if (context->image_mode) {
+                        PcieUiPlateResult image_result;
+                        image_result.plate_text = result.plate_name;
+                        image_result.plate_type = result.plate_type;
+                        image_result.plate_confidence = confidence;
+                        image_plate_results.push_back(image_result);
+                    }
                 }
             }
 
             PcieUiStatus status = BuildUiStatus(*context, source, start_ms, true, true, true,
                                                 "", plate_text, plate_type, plate_confidence);
+            status.image_generation = frame->image_generation;
+            status.image_plate_results.swap(image_plate_results);
             if (callbacks != nullptr && callbacks->on_status) {
                 callbacks->on_status(status);
             }
@@ -449,7 +503,11 @@ void DisplayThread(PcieAppContext* context, const PcieUiCallbacks* callbacks,
 
         begin = std::chrono::steady_clock::now();
         const std::vector<PipelineResult> display_results =
-            BuildDisplayResults(context, frame->frame_id, ui_buffer.width, ui_buffer.height);
+            BuildDisplayResults(context,
+                                frame->frame_id,
+                                frame->image_generation,
+                                ui_buffer.width,
+                                ui_buffer.height);
         if (context->overlay_renderer.Render(&ui_buffer, display_results, false) != 0) {
             ++context->performance.overlay_failures;
         }
@@ -517,6 +575,20 @@ void PrintPerformance(const PcieAppContext& context, const PcieFrameSource& sour
         printf("Average inference pipeline: %.2f ms\n",
                context.performance.inference_ms / inference_jobs);
     }
+    if (context.image_mode && captured_frames > 0) {
+        printf("Average static image change detection: %.3f ms\n",
+               context.performance.image_change_detection_ms /
+                   captured_frames);
+    }
+    if (!context.image_mode &&
+        context.performance.tracker_result_lag_samples > 0U) {
+        printf("Tracker result lag average/max: %.2f / %d frames\n",
+               static_cast<double>(
+                   context.performance.tracker_result_lag_frames) /
+                   static_cast<double>(
+                       context.performance.tracker_result_lag_samples),
+               context.performance.tracker_max_result_lag_frames);
+    }
     printf("PP-OCR primary/retry/retry accepted: %llu / %llu / %llu",
            (unsigned long long)context.pipeline.ppocr_primary_attempts,
            (unsigned long long)context.pipeline.ppocr_retry_attempts,
@@ -553,7 +625,7 @@ static int RunPpocrPcieDemoInternal(const char* yolov8_model,
                                     const char* ppocr_model,
                                     const char* dictionary,
                                     const PcieUiCallbacks* callbacks,
-                                    bool immediate_plate_results) {
+                                    bool image_mode) {
     g_should_stop = 0;
     printf("========================================\n");
     printf("    YOLOv8 PP-OCR PCIe BGR565 Demo      \n");
@@ -569,12 +641,14 @@ static int RunPpocrPcieDemoInternal(const char* yolov8_model,
         return -1;
     }
     FramePool frame_pool(kFramePoolCapacity);
-    PcieAppContext context(immediate_plate_results);
+    PcieAppContext context(image_mode);
     PcieFrameSource source;
+    StaticImageChangeDetector image_change_detector;
 
     printf("========== Initializing Pipeline ==========\n");
     printf("Plate result mode: %s\n",
-           immediate_plate_results ? "single inference" : "video tracker vote");
+           image_mode ? "static-image generation + tracker vote"
+                      : "video tracker vote");
     int ret = init_ppocr_pipeline(
         yolov8_model, ppocr_model, dictionary, &context.pipeline);
     if (ret != 0) {
@@ -650,6 +724,7 @@ static int RunPpocrPcieDemoInternal(const char* yolov8_model,
     int capture_result = 0;
     uint64_t last_status_ms = start_ms;
     uint64_t last_retry_log_ms = start_ms;
+    uint64_t last_image_generation = 0;
 
     printf("========== Capturing PCIe Frames ==========\n");
     while (!g_should_stop) {
@@ -721,6 +796,27 @@ static int RunPpocrPcieDemoInternal(const char* yolov8_model,
 
         frame->frame_id = frame_id;
         frame->enqueue_ms = NowMilliseconds();
+        if (image_mode) {
+            const std::chrono::steady_clock::time_point detection_begin =
+                std::chrono::steady_clock::now();
+            frame->image_generation =
+                image_change_detector.ObserveBgr565(
+                    frame->pixels.data(),
+                    frame->pixels.size(),
+                    PcieFrameSource::kFrameWidth,
+                    PcieFrameSource::kFrameHeight,
+                    PcieFrameSource::kFrameWidth);
+            context.performance.image_change_detection_ms +=
+                ElapsedMilliseconds(detection_begin);
+            if (frame->image_generation != last_image_generation) {
+                printf("Static image generation: %llu (frame=%d)\n",
+                       (unsigned long long)frame->image_generation,
+                       frame_id);
+                last_image_generation = frame->image_generation;
+            }
+        } else {
+            frame->image_generation = 0U;
+        }
         context.display_queue.Push(frame);
         if ((frame_id % kInferenceInterval) == 0) {
             context.inference_queue.Push(frame);

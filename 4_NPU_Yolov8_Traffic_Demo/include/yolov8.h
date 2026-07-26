@@ -47,7 +47,7 @@ typedef struct {
     int model_width;
     int model_height;
     bool is_quant;
-    bool person_light_only;
+    bool person_only;
 } traffic_rknn_app_context_t;
 
 #include "postprocess.h"

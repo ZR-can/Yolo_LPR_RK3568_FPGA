@@ -27,9 +27,6 @@ private:
     std::vector<PersonTrack> person_tracks_;
     std::deque<TrafficLightState> light_votes_;
     TrafficLightState stable_light_ = TRAFFIC_LIGHT_UNKNOWN;
-    TrafficDetectionState cached_light_;
-    bool has_cached_light_ = false;
-    int cached_light_missed_frames_ = 0;
     int next_track_id_ = 1;
     int violation_event_total_ = 0;
 };
