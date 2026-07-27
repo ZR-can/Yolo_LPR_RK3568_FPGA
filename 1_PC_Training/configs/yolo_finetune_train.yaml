@@ -1,0 +1,54 @@
+# 从现有 best.pt 开始一次新的低学习率微调；不要用于断点续训。
+task: detect
+epochs: 30
+patience: 10
+batch: 16
+imgsz: 640
+save: true
+save_period: 5
+cache: false
+device: "0"
+workers: 8
+project: D:/Yolo_LPR_RK3568_FPGA_Project/1_PC_Training/scripts/runs/finetune_results
+name: yolov8n_special_other_20260726
+exist_ok: false
+pretrained: true
+optimizer: AdamW
+verbose: true
+seed: 20260726
+deterministic: true
+rect: false
+cos_lr: true
+close_mosaic: 5
+resume: false
+amp: true
+
+# 低学习率微调，末端学习率为 lr0*lrf=1e-5。
+lr0: 0.0002
+lrf: 0.05
+momentum: 0.9
+weight_decay: 0.0005
+warmup_epochs: 2.0
+warmup_momentum: 0.8
+warmup_bias_lr: 0.0
+
+# 保持检测损失的 Ultralytics 默认相对权重；类别平衡由数据层过采样完成。
+box: 7.5
+cls: 0.5
+dfl: 1.5
+
+# 颜色即类别语义，微调阶段降低 HSV 与缩放扰动，避免把号牌颜色增强错类。
+hsv_h: 0.005
+hsv_s: 0.3
+hsv_v: 0.3
+degrees: 0.0
+translate: 0.1
+scale: 0.3
+shear: 0.0
+perspective: 0.0
+flipud: 0.0
+fliplr: 0.5
+mosaic: 0.5
+mixup: 0.0
+cutmix: 0.0
+copy_paste: 0.0

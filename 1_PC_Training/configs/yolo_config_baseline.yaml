@@ -1,0 +1,11 @@
+# 微调前原始 YOLO 四分类数据集，仅用于固定旧基线。
+path: D:/Yolo_LPR_RK3568_FPGA_Project/1_PC_Training/datasets/yolo_format
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: blue
+  1: green
+  2: yellow_single
+  3: other

@@ -20,25 +20,35 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Codex workspace instructions
-AGENTS.md
-
 # 测试数据/大文件
 build/
 install/
-3_NPU_Yolov8_LPR_Demo/model/*.bat
-3_NPU_Yolov8_LPR_Demo/model/test*
-3_NPU_Yolov8_LPR_Demo/*.log
-3_NPU_Yolov8_LPR_Demo/**/*.log
+results/
 *dataset/
 *images/
 *imgs/
 *videos/
+3_NPU_Yolov8_PPOCR_Demo/model/*.bat
+3_NPU_Yolov8_PPOCR_Demo/model/test*
+3_NPU_Yolov8_PPOCR_Demo/*.log
+3_NPU_Yolov8_PPOCR_Demo/**/*.log
+5_QT_UI_Demo/qmake.tar
+5_QT_UI_Demo/qt-everywhere-src-*.tar*
 1_PC_Training/datasets/
+1_PC_Training/PaddleOCR/
 1_PC_Training/LPRNet_Pytorch/data
-1_PC_Training/scripts/runs/test_results/val/labels
+1_PC_Training/scripts/runs/
 relate
 rknn
 2_Model_Conversion_PC_Simulation/ultralytics_yolov8
-3_NPU_Yolov8_LPR_Demo/result
+2_Model_Conversion_PC_Simulation/PPOCR/model/quant_images
+3_NPU_Yolov8_PPOCR_Demo/result
+3_NPU_Yolov8_PPOCR_Demo/tests
 yolo_-lprnet_-pytorch-master
+pcie_720p
+*_accuracy_analysis/
+4_NPU_Yolov8_Traffic_Demo/test/*.mp4
+tmp/
+test/
+testresult.zip
+outputs/

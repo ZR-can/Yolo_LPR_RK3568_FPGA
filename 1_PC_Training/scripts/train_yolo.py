@@ -1,97 +1,254 @@
-"""
-使用YOLOv8训练车牌检测模型（支持蓝牌/绿牌分类）
-基于ultralytics库实现，在原有模型基础上微调
-"""
-# python train_yolo.py
-import os
+#!/usr/bin/env python3
+"""从已有最佳权重开始新的 YOLO 微调，或显式恢复中断的微调任务。"""
+
+from __future__ import annotations
+
+# %% Imports and defaults
 import argparse
+import hashlib
+import json
 import time
+from pathlib import Path
+from typing import Any
+
 from ultralytics import YOLO
-from tqdm import tqdm
+from ultralytics.utils import YAML
 
 
-def get_parser():
-    parser = argparse.ArgumentParser(description='训练YOLO车牌检测模型')
-    parser.add_argument('--model', default='D:\\Yolo_LPR_RK3568_FPGA_Project\\1_PC_Training\\scripts\\runs\\train_results\\yolov8n_multi_class\\weights\\last.pt', help='预训练模型路径')
-    parser.add_argument('--config', default='../configs/yolo_config.yaml', help='YOLO配置文件路径')
-    # 微调场景下调整默认参数
-    parser.add_argument('--epochs', default=50, type=int, help='训练轮数，微调可适当减少')
-    parser.add_argument('--batch_size', default=16, type=int, help='批次大小')
-    parser.add_argument('--img_size', default=640, type=int, help='输入图像大小')
-    parser.add_argument('--lr0', default=0.001, type=float, help='初始学习率，微调建议调低')
-    parser.add_argument('--device', default='0', help='训练设备')
-    parser.add_argument('--name', default='yolov8n_multi_class', help='训练结果保存名称')
-    parser.add_argument('--project', default='../train_results', help='训练结果保存路径')
+SCRIPT_DIR = Path(__file__).resolve().parent
+TRAINING_ROOT = SCRIPT_DIR.parent
+DEFAULT_MODEL = (
+    SCRIPT_DIR
+    / "runs"
+    / "train_results"
+    / "yolov8n_multi_class"
+    / "weights"
+    / "best.pt"
+)
+DEFAULT_DATA = TRAINING_ROOT / "configs" / "yolo_config.yaml"
+DEFAULT_TRAIN_CONFIG = (
+    TRAINING_ROOT / "configs" / "yolo_finetune_train.yaml"
+)
+EXPECTED_CLASSES = {
+    0: "blue",
+    1: "green",
+    2: "yellow_single",
+    3: "other",
+}
 
-    
-    return parser
 
-
-def main():
-    # 解析命令行参数
-    args = get_parser().parse_args()
-    
-    print(f"开始在原有模型基础上微调蓝绿牌分类模型...")
-    print(f"配置参数:\n" \
-          f"  基础模型: {args.model}\n" \
-          f"  配置文件: {args.config}\n" \
-          f"  训练轮数: {args.epochs}\n" \
-          f"  批次大小: {args.batch_size}\n" \
-          f"  图像大小: {args.img_size}\n" \
-          f"  初始学习率: {args.lr0}\n" \
-          f"  保存名称: {args.name}\n" \
-          f"  保存路径: {args.project}")
-    
-    # 初始化YOLO模型，自动加载原有权重，自动适配新的类别数
-    model = YOLO(args.model)
-    
-    # 训练模型
-    try:
-        # 记录训练开始时间
-        train_start_time = time.time()
-        print(f"\n开始训练，共{args.epochs}轮，请等待...")
-        
-        # 训练模型（ultralytics原生会输出每轮进度和损失）
-        results = model.train(
-            data=args.config,
-            epochs=args.epochs,
-            batch=args.batch_size,
-            imgsz=args.img_size,
-            lr0=args.lr0,
-            device=args.device,
-            name=args.name,
-            project=args.project,
-            exist_ok=True , # 如果保存目录已存在，继续训练
-            resume=True  # 从上次训练中断的地方继续训练
+# %% CLI and validation
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "默认从旧 best.pt 开始新的特殊车牌微调（resume=false）。"
+            "只有恢复同一次中断任务时才使用 --resume-checkpoint。"
         )
-        
-        # 训练耗时统计
-        train_duration = time.time() - train_start_time
-        print(f"\n训练完成，总耗时: {train_duration/60:.2f} 分钟 ({train_duration:.2f} 秒)")
-        
-        # 验证模型（添加进度条）
-        print("\n开始验证模型...")
-        with tqdm(total=1, desc='验证进度', bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
-            metrics = model.val()
-            pbar.update(1)
-        
-        print(f"模型验证结果:\n" \
-              f"  mAP50: {metrics.box.map50}\n" \
-              f"  mAP50-95: {metrics.box.map}")
-        
-        # 导出模型（添加进度条）
-        print("\n开始导出模型为torchscript格式...")
-        with tqdm(total=1, desc='导出进度', bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
-            model.export(format='torchscript')
-            pbar.update(1)
-        
-        
-    except Exception as e:
-        print(f"训练过程中出现错误: {str(e)}")
-        return False
-    
-    return True
+    )
+    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+    parser.add_argument("--data", type=Path, default=DEFAULT_DATA)
+    parser.add_argument(
+        "--train-config",
+        type=Path,
+        default=DEFAULT_TRAIN_CONFIG,
+    )
+    parser.add_argument(
+        "--resume-checkpoint",
+        type=Path,
+        default=None,
+        help="仅用于恢复本次微调的中断 checkpoint（通常为 last.pt）",
+    )
+    parser.add_argument("--device", default=None)
+    parser.add_argument("--project", type=Path, default=None)
+    parser.add_argument("--name", default=None)
+    parser.add_argument(
+        "--skip-test",
+        action="store_true",
+        help="训练后不在 test split 上执行最终评估",
+    )
+    return parser.parse_args()
 
 
-if __name__ == '__main__':
-    main()
+def require_file(path: Path, description: str) -> Path:
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"找不到{description}：{resolved}")
+    return resolved
+
+
+def normalize_names(raw_names: Any) -> dict[int, str]:
+    if isinstance(raw_names, list):
+        return {index: str(name) for index, name in enumerate(raw_names)}
+    if isinstance(raw_names, dict):
+        return {int(class_id): str(name) for class_id, name in raw_names.items()}
+    raise ValueError("数据 YAML 的 names 必须为列表或映射")
+
+
+def validate_data_config(data_path: Path) -> None:
+    data_config = YAML.load(data_path)
+    required_keys = {"path", "train", "val", "test", "names"}
+    missing = required_keys - data_config.keys()
+    if missing:
+        raise ValueError(f"数据 YAML 缺少字段：{sorted(missing)}")
+    names = normalize_names(data_config["names"])
+    if names != EXPECTED_CLASSES:
+        raise ValueError(f"类别映射不一致：{names} != {EXPECTED_CLASSES}")
+    dataset_root = Path(data_config["path"])
+    if not dataset_root.is_absolute():
+        dataset_root = (data_path.parent / dataset_root).resolve()
+    for split in ("train", "val", "test"):
+        split_path = dataset_root / data_config[split]
+        if not split_path.is_dir():
+            raise FileNotFoundError(f"{split} 图片目录不存在：{split_path}")
+
+
+def validate_train_config(config_path: Path) -> dict[str, Any]:
+    config = YAML.load(config_path)
+    if config.get("resume") not in (False, None):
+        raise ValueError(
+            "微调配置必须保持 resume: false；中断恢复请使用 --resume-checkpoint"
+        )
+    if config.get("cache") not in (False, None):
+        raise ValueError("当前内存不足以安全缓存全量图像，cache 必须为 false")
+    return config
+
+
+# %% Result recording
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def metrics_to_dict(metrics: Any) -> dict[str, float]:
+    return {
+        "precision_mean": float(metrics.box.mp),
+        "recall_mean": float(metrics.box.mr),
+        "map50": float(metrics.box.map50),
+        "map50_95": float(metrics.box.map),
+    }
+
+
+def write_training_summary(
+    output_path: Path,
+    *,
+    initial_model: Path,
+    initial_model_sha256: str,
+    resume_checkpoint: Path | None,
+    data_path: Path,
+    train_config_path: Path,
+    best_path: Path,
+    last_path: Path,
+    phase_duration_seconds: float,
+    validation_metrics: Any,
+    test_metrics: Any | None,
+) -> None:
+    summary = {
+        "initial_model": str(initial_model),
+        "initial_model_sha256": initial_model_sha256,
+        "resume_checkpoint": (
+            str(resume_checkpoint) if resume_checkpoint is not None else None
+        ),
+        "data": str(data_path),
+        "train_config": str(train_config_path),
+        "best": str(best_path),
+        "last": str(last_path),
+        "phase_duration_seconds": phase_duration_seconds,
+        "validation": metrics_to_dict(validation_metrics),
+        "test": metrics_to_dict(test_metrics) if test_metrics is not None else None,
+    }
+    output_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+# %% Training
+def main() -> int:
+    args = parse_args()
+    data_path = require_file(args.data, "数据 YAML")
+    train_config_path = require_file(args.train_config, "训练参数 YAML")
+    validate_data_config(data_path)
+    train_config = validate_train_config(train_config_path)
+
+    resume_checkpoint = (
+        require_file(args.resume_checkpoint, "续训 checkpoint")
+        if args.resume_checkpoint is not None
+        else None
+    )
+    initial_model = require_file(args.model, "初始模型权重")
+    model_path = require_file(
+        resume_checkpoint if resume_checkpoint is not None else args.model,
+        "模型权重",
+    )
+    initial_model_digest = sha256(initial_model)
+    model = YOLO(str(model_path))
+
+    overrides: dict[str, Any] = {
+        "cfg": str(train_config_path),
+        "data": str(data_path),
+        "resume": str(resume_checkpoint) if resume_checkpoint else False,
+    }
+    if args.device is not None:
+        overrides["device"] = args.device
+    if args.project is not None:
+        overrides["project"] = str(args.project.expanduser().resolve())
+    if args.name is not None:
+        overrides["name"] = args.name
+
+    mode = "恢复中断训练" if resume_checkpoint else "从旧最佳权重开始新微调"
+    print(f"模式：{mode}")
+    print(f"模型：{model_path}")
+    print(f"数据：{data_path}")
+    print(f"参数：{train_config_path}")
+
+    start_time = time.time()
+    validation_metrics = model.train(**overrides)
+    duration_seconds = time.time() - start_time
+    trainer = model.trainer
+    best_path = Path(trainer.best).resolve()
+    last_path = Path(trainer.last).resolve()
+    if not best_path.is_file() or not last_path.is_file():
+        raise FileNotFoundError("训练结束但找不到 best.pt 或 last.pt")
+
+    test_metrics = None
+    if not args.skip_test:
+        print("训练完成，使用 best.pt 评估 test split...")
+        best_model = YOLO(str(best_path))
+        test_metrics = best_model.val(
+            data=str(data_path),
+            split="test",
+            imgsz=int(train_config["imgsz"]),
+            batch=int(train_config["batch"]),
+            device=overrides.get("device", train_config.get("device", "0")),
+            workers=int(train_config.get("workers", 8)),
+            project=str(best_path.parents[2]),
+            name=f"{best_path.parents[1].name}_test",
+            exist_ok=True,
+            plots=True,
+        )
+
+    summary_path = best_path.parents[1] / "training_summary.json"
+    write_training_summary(
+        summary_path,
+        initial_model=initial_model,
+        initial_model_sha256=initial_model_digest,
+        resume_checkpoint=resume_checkpoint,
+        data_path=data_path,
+        train_config_path=train_config_path,
+        best_path=best_path,
+        last_path=last_path,
+        phase_duration_seconds=duration_seconds,
+        validation_metrics=validation_metrics,
+        test_metrics=test_metrics,
+    )
+    print(f"训练耗时：{duration_seconds / 60:.2f} 分钟")
+    print(f"最佳权重：{best_path}")
+    print(f"训练摘要：{summary_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,44 @@
+{
+  "status": "VALID",
+  "seed": 20260726,
+  "image_size": 640,
+  "pad_color": [
+    0,
+    0,
+    0
+  ],
+  "channel_preparation": "normal-color JPEG: cv2 BGR letterbox written directly by cv2.imwrite",
+  "total_images": 2561,
+  "selection_bucket_counts": {
+    "blue": 600,
+    "green": 600,
+    "other_all": 761,
+    "yellow_single": 600
+  },
+  "class_presence_counts": {
+    "0": 887,
+    "1": 600,
+    "2": 686,
+    "3": 761
+  },
+  "other_unique_images": 761,
+  "other_source_kind_counts": {
+    "old": 433,
+    "special": 328
+  },
+  "other_split_counts": {
+    "test": 37,
+    "train": 684,
+    "val": 40
+  },
+  "other_partition_counts": {
+    "test": 4,
+    "train": 422,
+    "val": 7,
+    "教练车牌": 86,
+    "澳门出入境车牌": 77,
+    "警用车牌": 84,
+    "香港出入境车牌": 81
+  },
+  "source_manifest": "D:\\Yolo_LPR_RK3568_FPGA_Project\\1_PC_Training\\datasets\\yolo_finetune_special\\dataset_manifest.tsv"
+}

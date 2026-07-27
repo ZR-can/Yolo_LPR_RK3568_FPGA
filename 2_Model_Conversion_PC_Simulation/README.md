@@ -15,6 +15,8 @@
   YOLOv8 模型、转换脚本、PC 侧仿真脚本
 - `LPRNet/`
   LPRNet 模型、ONNX 导出、RKNN 转换和 PC 侧评估脚本
+- `PPOCR/`
+  车牌专用 PP-OCRv4 ONNX 校验、LearnableAffine 折叠、RK3568 FP16/W8A8/手工混合量化转换和均衡量化校准集生成
 - `py_utils/`
   YOLOv8 PC 仿真和后处理共用工具
 - `ultralytics_yolov8/`
@@ -90,13 +92,20 @@ python lprnet_PC_eval.py --onnx_path ../model/lprnet8repair.onnx --quant
 - 默认目标平台配置为 `rk3568`
 - 默认测试目录与量化数据集路径可通过参数覆盖
 
+### 6. PP-OCRv4 转换为 RKNN
+
+当前车牌识别模型固定输入为 `[1,3,48,160]`、输出为 `[1,20,74]`，使用 73 字符字典。项目专用转换脚本会先校验 ONNX 签名和字典，再生成 RK3568 FP16 基线或 W8A8 PTQ 模型；`hybrid_quant.py` 按官方 Step1/Step2 接口生成手工混合量化模型，并固定关闭当前模型会触发 `Slice.5-rs` 异常的自动 proposal。量化校准集脚本从 basic、hard 和六类 special 训练清单均衡抽样，并复现等比例缩放、右侧补值 128 的输入预处理。
+
+完整命令、量化顺序和验证边界见 [PPOCR/README.md](PPOCR/README.md)。
+
 ## 相关子说明
 
 - 更细的 YOLOv8 示例说明见 [yolov8/README.md](yolov8/README.md)
 - 更细的 LPRNet 示例说明见 [LPRNet/README.md](LPRNet/README.md)
+- PP-OCRv4 RK3568 转换与量化说明见 [PPOCR/README.md](PPOCR/README.md)
 
 ## 注意事项
 
 - 量化数据集文件路径由脚本内部常量决定，修改模型版本时要同步检查。
-- 不同模型版本的输出命名应保持统一，便于 `3_NPU_Yolov8_LPR_Demo` 直接引用。
+- 不同模型版本的输出命名应保持统一，便于 `3_NPU_Yolov8_PPOCR_Demo` 直接引用。
 - 转换结果是否可用，仍需要最终到 `3` 中完成板端验证。
