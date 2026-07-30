@@ -50,5 +50,5 @@ pcie_720p
 4_NPU_Yolov8_Traffic_Demo/test/*.mp4
 tmp/
 test/
-testresult.zip
+test.zip
 outputs/
