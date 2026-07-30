@@ -291,3 +291,24 @@
   `model/yolov8.rknn`，使图片和视频模式均按既有应用目录契约加载微调模型。
 - 新旧 Qt demo 均保持 `BOX_THRESH=0.55`，未修改项目 3 的 C/C++ 源文件或
   `include/postprocess.h`。
+
+## 2026-07-27 图片模式多车牌追踪显示抗推理延迟
+
+- 15 车牌静态图实测平均单次推理流水线为 `442.12 ms`，显示为 `25.43 FPS`，
+  推理结果到达时约滞后 `11.25` 个显示帧；原 Tracker 统一使用
+  `max_age_frames_=8`，既会在 `update()` 中拒绝跨越较大源帧间隔的旧轨迹，
+  也会在 `predict()` 中隐藏超过 8 帧的显示结果。因此 YOLO/PP-OCR 虽持续得到
+  合法车牌，框和 Qt 结果栏仍可能完全为空；8 车牌时延迟接近门限，则表现为框
+  周期性闪烁。
+- `SimplePlateTracker::update()` 与 `predict()` 新增仅由图片模式启用的
+  `static_image_mode` 参数。静态图片按完成的推理轮次而非源帧/显示帧差计算轨迹
+  年龄，两批慢速多车牌 OCR 之间不执行运动外推，也不因显示帧持续推进而隐藏已
+  确认轨迹；连续两次相同文本确认、合法车牌置信度投票以及图片 generation 变化时
+  的 Tracker 重置均保持不变。
+- 视频模式继续使用默认 `static_image_mode=false`，原有按真实帧差推进运动状态、
+  8 帧短检测空窗预测和超龄隐藏逻辑未修改。MSVC 主机端
+  `simple_tracker_motion_test` 新增 8 个静态目标、12 帧结果间隔及 400 帧显示延迟
+  回归并通过；原高速运动、短漏检、超龄隐藏用例及
+  `plate_rule_test (ga36_plate_type_v3)` 同时通过。编译仅保留
+  `simple_tracker.cc` 原有 C4244 整数转浮点警告；完整 Linux/aarch64 构建及
+  RK3568 + FPGA 图片模式实流仍需重新部署确认。

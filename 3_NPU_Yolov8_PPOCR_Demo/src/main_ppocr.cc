@@ -291,13 +291,15 @@ std::vector<PipelineResult> BuildDisplayResults(PcieAppContext* context,
                     context->performance.tracker_max_result_lag_frames,
                     result_lag_frames);
         }
-        context->tracker.update(current_results, result_frame_id);
+        context->tracker.update(
+            current_results, result_frame_id, context->image_mode);
         context->last_result_frame_id = result_frame_id;
         context->performance.plate_results.fetch_add(current_results.size());
     }
 
     std::vector<PipelineResult> tracked_results;
-    context->tracker.predict(display_frame_id, tracked_results);
+    context->tracker.predict(
+        display_frame_id, tracked_results, context->image_mode);
 
     const float scale_x = (float)display_width / PcieFrameSource::kFrameWidth;
     const float scale_y = (float)display_height / PcieFrameSource::kFrameHeight;
