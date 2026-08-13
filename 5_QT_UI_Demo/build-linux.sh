@@ -39,7 +39,7 @@ fi
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PLATFORM="${CMAKE_TARGET_SOC}_linux_${TARGET_ARCH}"
-BUILD_DIR="${SCRIPT_DIR}/build/build_yolov8_ppocr_qt_${PLATFORM}_${BUILD_TYPE}"
+BUILD_DIR="/tmp/qtu1280_build"
 INSTALL_DIR="${SCRIPT_DIR}/install/${PLATFORM}/rknn_yolov8_ppocr_qt_ui_demo"
 
 cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
@@ -56,71 +56,32 @@ cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
 cmake --build "${BUILD_DIR}" --parallel "${JOBS}"
 cmake --install "${BUILD_DIR}"
 
-EXECUTABLE="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/yolov8_ppocr_pcie_qt_ui"
+EXECUTABLE="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui_1280x800/yolov8_ppocr_pcie_qt_ui_1280x800"
 if [ ! -x "${EXECUTABLE}" ]; then
     echo "Build finished but executable is missing: ${EXECUTABLE}"
     exit 1
 fi
-LAUNCHER="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/run-qt-demo.sh"
-if [ ! -x "${LAUNCHER}" ]; then
-    echo "Build finished but launcher is missing: ${LAUNCHER}"
-    exit 1
-fi
-FINETUNE_EXECUTABLE="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui_finetune_demo/yolov8_ppocr_pcie_qt_ui"
-if [ ! -x "${FINETUNE_EXECUTABLE}" ]; then
-    echo "Build finished but finetune executable is missing: ${FINETUNE_EXECUTABLE}"
-    exit 1
-fi
-FINETUNE_LAUNCHER="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui_finetune_demo/run-finetune-demo.sh"
-if [ ! -x "${FINETUNE_LAUNCHER}" ]; then
-    echo "Build finished but finetune launcher is missing: ${FINETUNE_LAUNCHER}"
-    exit 1
-fi
-YOLO_MODEL="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/yolov8.rknn"
-VIDEO_PPOCR_MODEL="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn"
-PPOCR_DICTIONARY="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/cblprd_plate_dict.txt"
-PLATE_LABELS="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/labels_list.txt"
-TRAFFIC_MODEL="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/traffic/yolov8_traffic_i8.rknn"
-TRAFFIC_LABELS="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/traffic/labels_list.txt"
-TRAFFIC_ROI_CONFIG="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/traffic/traffic_roi.conf"
-IMAGE_PPOCR_MODEL="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/ppocrv4_rec14_fold_affine_1x1_rk3568_fp16.rknn"
+FPGA_CTRL_TOOL="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui_1280x800/fpga_bar0_ctrl_test"
+FPGA_CTRL_SCRIPT="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui_1280x800/fpga_preproc_ctrl.sh"
+for REQUIRED_CTRL_FILE in \
+    "${FPGA_CTRL_TOOL}" \
+    "${FPGA_CTRL_SCRIPT}"; do
+    if [ ! -x "${REQUIRED_CTRL_FILE}" ]; then
+        echo "Build finished but FPGA control entry point is missing or not executable: ${REQUIRED_CTRL_FILE}"
+        exit 1
+    fi
+done
+TRAFFIC_MODEL="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui_1280x800/model/traffic/yolov8_traffic_i8.rknn"
+TRAFFIC_LABELS="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui_1280x800/model/traffic/labels_list.txt"
+IMAGE_PPOCR_MODEL="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui_1280x800/model/ppocrv4_rec14_fold_affine_1x1_rk3568_fp16.rknn"
 for REQUIRED_MODE_FILE in \
-    "${YOLO_MODEL}" \
-    "${VIDEO_PPOCR_MODEL}" \
-    "${PPOCR_DICTIONARY}" \
-    "${PLATE_LABELS}" \
     "${TRAFFIC_MODEL}" \
     "${TRAFFIC_LABELS}" \
-    "${TRAFFIC_ROI_CONFIG}" \
     "${IMAGE_PPOCR_MODEL}"; do
     if [ ! -f "${REQUIRED_MODE_FILE}" ]; then
         echo "Build finished but mode resource is missing: ${REQUIRED_MODE_FILE}"
         exit 1
     fi
 done
-
-FINETUNE_DEMO_DIR="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui_finetune_demo"
-FINETUNE_YOLO_MODEL="${FINETUNE_DEMO_DIR}/model/yolov8.rknn"
-for REQUIRED_FINETUNE_FILE in \
-    "${FINETUNE_YOLO_MODEL}" \
-    "${FINETUNE_DEMO_DIR}/model/ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn" \
-    "${FINETUNE_DEMO_DIR}/model/cblprd_plate_dict.txt" \
-    "${FINETUNE_DEMO_DIR}/model/labels_list.txt" \
-    "${FINETUNE_DEMO_DIR}/model/traffic/yolov8_traffic_i8.rknn" \
-    "${FINETUNE_DEMO_DIR}/model/traffic/labels_list.txt" \
-    "${FINETUNE_DEMO_DIR}/model/traffic/traffic_roi.conf" \
-    "${FINETUNE_DEMO_DIR}/model/ppocrv4_rec14_fold_affine_1x1_rk3568_fp16.rknn" \
-    "${FINETUNE_DEMO_DIR}/run-qt-demo.sh"; do
-    if [ ! -f "${REQUIRED_FINETUNE_FILE}" ]; then
-        echo "Build finished but finetune resource is missing: ${REQUIRED_FINETUNE_FILE}"
-        exit 1
-    fi
-done
-
-FINETUNE_SOURCE_MODEL="${SCRIPT_DIR}/../3_NPU_Yolov8_PPOCR_Demo/model/finetune_i8.rknn"
-if ! cmp -s "${FINETUNE_SOURCE_MODEL}" "${FINETUNE_YOLO_MODEL}"; then
-    echo "Installed finetune model differs from: ${FINETUNE_SOURCE_MODEL}"
-    exit 1
-fi
 
 echo "Installed to: ${INSTALL_DIR}"
