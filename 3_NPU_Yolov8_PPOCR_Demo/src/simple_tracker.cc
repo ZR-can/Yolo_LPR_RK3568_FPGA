@@ -515,21 +515,15 @@ void SimplePlateTracker::update_motion_from_observation(
     track->observed_h = det_h;
 }
 
-void SimplePlateTracker::update(const std::vector<PipelineResult>& detections,
-                                int frame_id,
-                                bool static_image_mode) {
+void SimplePlateTracker::update(const std::vector<PipelineResult>& detections, int frame_id) {
     int dt = (last_frame_id_ < 0) ? 1 : (frame_id - last_frame_id_);
     if (dt < 1) dt = 1;
     last_frame_id_ = frame_id;
 
-    // Static images age by completed inference rounds, not display-frame lag.
-    // Their geometry is unchanged while a slow multi-plate OCR batch is running.
-    const int age_increment = static_image_mode ? 1 : dt;
+    // 1. 使用速度和受限加速度把状态推进到当前结果帧。
     for (auto& track : tracks_) {
-        if (!static_image_mode) {
-            advance_motion_state(&track, dt);
-        }
-        track.time_since_update += age_increment;
+        advance_motion_state(&track, dt);
+        track.time_since_update += dt;
     }
 
     // 2. 构建相似度矩阵并进行贪心二分图匹配
@@ -627,14 +621,10 @@ void SimplePlateTracker::update(const std::vector<PipelineResult>& detections,
         tracks_.end());
 }
 
-void SimplePlateTracker::predict(int frame_id,
-                                 std::vector<PipelineResult>& out_results,
-                                 bool static_image_mode) const {
+void SimplePlateTracker::predict(int frame_id, std::vector<PipelineResult>& out_results) const {
     out_results.clear();
     
-    int dt = (static_image_mode || last_frame_id_ < 0)
-        ? 0
-        : (frame_id - last_frame_id_);
+    int dt = (last_frame_id_ < 0) ? 0 : (frame_id - last_frame_id_);
     if (dt < 0) {
         dt = 0;
     }

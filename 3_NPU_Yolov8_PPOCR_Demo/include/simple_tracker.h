@@ -117,12 +117,8 @@ class SimplePlateTracker {
 public:
     SimplePlateTracker();
     void reset();
-    void update(const std::vector<PipelineResult>& detections,
-                int frame_id,
-                bool static_image_mode = false);
-    void predict(int frame_id,
-                 std::vector<PipelineResult>& out_results,
-                 bool static_image_mode = false) const;
+    void update(const std::vector<PipelineResult>& detections, int frame_id);
+    void predict(int frame_id, std::vector<PipelineResult>& out_results) const;
 
 private:
     bool is_valid_plate(const std::string& plate, const std::string& plate_type) const;
