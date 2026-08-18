@@ -38,6 +38,7 @@ results/
 1_PC_Training/PaddleOCR/
 1_PC_Training/LPRNet_Pytorch/data
 1_PC_Training/scripts/runs/
+1_PC_Training/logs
 relate
 rknn
 2_Model_Conversion_PC_Simulation/ultralytics_yolov8

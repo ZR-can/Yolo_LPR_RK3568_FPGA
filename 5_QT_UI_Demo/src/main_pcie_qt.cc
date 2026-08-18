@@ -22,7 +22,9 @@
 #include <QMainWindow>
 #include <QMetaType>
 #include <QPixmap>
+#include <QProcess>
 #include <QPushButton>
+#include <QRect>
 #include <QSize>
 #include <QSizePolicy>
 #include <QSet>
@@ -364,6 +366,11 @@ public:
           latest_frame_height_(0),
           latest_frame_stride_(0),
           latest_frame_id_(-1),
+          fpga_display_mode_(0),
+          fpga_roi_x_(100),
+          fpga_roi_y_(100),
+          fpga_roi_w_(512),
+          fpga_roi_h_(256),
           ui_painted_frames_(0),
           ui_frame_handoff_ms_(0.0),
           ui_statistics_printed_(false),
@@ -373,6 +380,8 @@ public:
           last_fps_ui_painted_frames_(0),
           last_fps_inference_jobs_(0) {
         ui_.setupUi(this);
+        ui_.videoBorderFrame->setAttribute(Qt::WA_TransparentForMouseEvents);
+        ui_.videoBorderFrame->raise();
         setWindowTitle(pcie_qt_ui::Zh("智能交通视觉分析系统"));
         ui_.titleLabel->setText(pcie_qt_ui::Zh("视频车牌识别"));
         ui_.fpsKeyLabel->setText(pcie_qt_ui::Zh("PCIe采集"));
@@ -389,9 +398,14 @@ public:
         connect(ui_.saveButton, &QPushButton::clicked, this, &MainWindow::SaveCurrentImage);
         connect(ui_.modeComboBox, &QComboBox::currentTextChanged,
                 this, &MainWindow::OnModeChanged);
-        ui_.startButton->setText(pcie_qt_ui::Zh("开始"));
+        connect(ui_.fpgaApplyButton, &QPushButton::clicked,
+                this, &MainWindow::ApplyFpgaControl);
+        ui_.fpgaModeComboBox->setCurrentIndex(0);
+        ui_.fpgaThresholdSpinBox->setValue(128);
+        ui_.startButton->setText(pcie_qt_ui::Zh("开始显示"));
         ui_.saveButton->setText(pcie_qt_ui::Zh("保存图片"));
         ui_.saveButton->setEnabled(false);
+        ResetFpgaControlParameters();
         ShowOperationMessage(pcie_qt_ui::Zh("等待PCIe帧数据"));
         ApplyStatus(PcieUiStatus());
     }
@@ -403,6 +417,7 @@ public:
 protected:
     void closeEvent(QCloseEvent* event) override {
         ShutdownWorker();
+        ResetFpgaControlParameters();
         event->accept();
     }
 
@@ -429,8 +444,8 @@ private slots:
             ui_.capturedValueLabel->setText(pcie_qt_ui::Zh("0.0 FPS"));
             ui_.inferenceValueLabel->setText(pcie_qt_ui::Zh("0.0 FPS"));
         }
-        ui_.startButton->setText(capture_enabled_ ? pcie_qt_ui::Zh("暂停")
-                                                   : pcie_qt_ui::Zh("继续"));
+        ui_.startButton->setText(capture_enabled_ ? pcie_qt_ui::Zh("暂停显示")
+                                                   : pcie_qt_ui::Zh("继续显示"));
         ui_.modeComboBox->setEnabled(!capture_enabled_);
         ui_.stateValueLabel->setText(capture_enabled_ ? pcie_qt_ui::Zh("运行中")
                                                        : pcie_qt_ui::Zh("已暂停"));
@@ -456,17 +471,28 @@ private slots:
         QElapsedTimer handoff_timer;
         handoff_timer.start();
         const QSize target_size = ui_.videoLabel->size();
-        ui_.videoLabel->setPixmap(QPixmap::fromImage(image));
+        QImage display_image = image;
+        const bool roi_preview = fpga_display_mode_ == 3 && target_size.isValid();
+        if (roi_preview) {
+            const int roi_x = std::max(0, std::min(fpga_roi_x_, image.width() - 1));
+            const int roi_y = std::max(0, std::min(fpga_roi_y_, image.height() - 1));
+            const int roi_w = std::max(1, std::min(fpga_roi_w_, image.width() - roi_x));
+            const int roi_h = std::max(1, std::min(fpga_roi_h_, image.height() - roi_y));
+            display_image = image.copy(QRect(roi_x, roi_y, roi_w, roi_h)).scaled(
+                target_size, Qt::KeepAspectRatio, Qt::FastTransformation);
+        }
+        ui_.videoLabel->setPixmap(QPixmap::fromImage(display_image));
         ui_frame_handoff_ms_ += handoff_timer.nsecsElapsed() / 1000000.0;
         if (target_size != last_logged_preview_viewport_size_) {
             std::printf(
-                "Qt preview: source=%dx%d, viewport=%dx%d, output=%dx%d, scaling=disabled\n",
+                "Qt preview: source=%dx%d, viewport=%dx%d, output=%dx%d, scaling=%s\n",
                 image.width(),
                 image.height(),
                 target_size.width(),
                 target_size.height(),
-                image.width(),
-                image.height());
+                display_image.width(),
+                display_image.height(),
+                roi_preview ? "roi-preview" : "disabled");
             std::fflush(stdout);
             last_logged_preview_viewport_size_ = target_size;
         }
@@ -489,7 +515,7 @@ private slots:
     }
 
     void OnWorkerFinished(const PcieUiStatus& status) {
-        ui_.startButton->setText(pcie_qt_ui::Zh("开始"));
+        ui_.startButton->setText(pcie_qt_ui::Zh("开始显示"));
         ui_.startButton->setEnabled(true);
         ui_.modeComboBox->setEnabled(true);
         ui_.stateValueLabel->setText(pcie_qt_ui::Zh("空闲"));
@@ -514,7 +540,7 @@ private slots:
                 return;
             }
             ShutdownWorker();
-            ui_.startButton->setText(pcie_qt_ui::Zh("开始"));
+            ui_.startButton->setText(pcie_qt_ui::Zh("开始显示"));
             ui_.stateValueLabel->setText(pcie_qt_ui::Zh("空闲"));
         }
 
@@ -582,7 +608,131 @@ private slots:
         printf("Qt saved image: %s\n", output_path.toUtf8().constData());
     }
 
+    void ApplyFpgaControl() {
+        static const char* const mode_names[] = {
+            "bypass", "brightness", "contrast", "roi-zoom"};
+        const int mode_index = ui_.fpgaModeComboBox->currentIndex();
+        if (mode_index < 0 || mode_index >= 4) {
+            ShowTransientOperationMessage(pcie_qt_ui::Zh("FPGA模式无效"));
+            return;
+        }
+
+        const int roi_x = ui_.fpgaRoiXSpinBox->value();
+        const int roi_y = ui_.fpgaRoiYSpinBox->value();
+        const int roi_w = ui_.fpgaRoiWSpinBox->value();
+        const int roi_h = ui_.fpgaRoiHSpinBox->value();
+        if (mode_index == 3 &&
+            (roi_w <= 0 || roi_h <= 0 ||
+             roi_x + roi_w > 1280 || roi_y + roi_h > 720)) {
+            ShowTransientOperationMessage(
+                pcie_qt_ui::Zh("ROI必须位于1280×720原始画面内"));
+            return;
+        }
+
+        const QStringList arguments = QStringList()
+            << "apply"
+            << QString::fromLatin1(mode_names[mode_index])
+            << QString::number(ui_.fpgaThresholdSpinBox->value())
+            << QString::number(roi_x)
+            << QString::number(roi_y)
+            << QString::number(roi_w)
+            << QString::number(roi_h);
+        QString error;
+        if (RunFpgaControlCommand(arguments, &error)) {
+            fpga_display_mode_ = mode_index;
+            fpga_roi_x_ = roi_x;
+            fpga_roi_y_ = roi_y;
+            fpga_roi_w_ = roi_w;
+            fpga_roi_h_ = roi_h;
+            last_logged_preview_viewport_size_ = QSize();
+            ShowTransientOperationMessage(pcie_qt_ui::Zh("FPGA参数已写入并读回"));
+        } else {
+            ShowTransientOperationMessage(
+                pcie_qt_ui::Zh("FPGA参数失败：%1").arg(error));
+        }
+    }
+
 private:
+    void ResetFpgaControlParameters() {
+        const QStringList arguments = QStringList()
+            << "apply" << "bypass" << "128" << "0" << "0" << "0" << "0";
+        QString error;
+        if (!RunFpgaControlCommand(arguments, &error)) {
+            std::fprintf(stderr, "FPGA default reset failed: %s\n",
+                         error.toUtf8().constData());
+        }
+        fpga_display_mode_ = 0;
+        fpga_roi_x_ = 0;
+        fpga_roi_y_ = 0;
+        fpga_roi_w_ = 0;
+        fpga_roi_h_ = 0;
+        ui_.fpgaModeComboBox->setCurrentIndex(0);
+        ui_.fpgaThresholdSpinBox->setValue(128);
+        last_logged_preview_viewport_size_ = QSize();
+    }
+
+    QString FpgaControlScriptPath() const {
+        return QApplication::applicationDirPath() + "/fpga_preproc_ctrl.sh";
+    }
+
+    bool RunFpgaControlCommand(const QStringList& arguments, QString* error) {
+        const QString script_path = FpgaControlScriptPath();
+        if (!QFileInfo(script_path).isFile()) {
+            if (error != nullptr) {
+                *error = pcie_qt_ui::Zh("找不到控制脚本");
+            }
+            return false;
+        }
+
+        QProcess process;
+        QStringList shell_arguments;
+        shell_arguments << script_path;
+        shell_arguments.append(arguments);
+        std::printf("FPGA control command: /bin/sh %s %s\n",
+                    script_path.toUtf8().constData(),
+                    arguments.join(" ").toUtf8().constData());
+        std::fflush(stdout);
+        process.start("/bin/sh", shell_arguments);
+        if (!process.waitForStarted(1000) || !process.waitForFinished(5000)) {
+            std::fprintf(stderr, "FPGA control process did not finish\n");
+            std::fflush(stderr);
+            if (error != nullptr) {
+                *error = pcie_qt_ui::Zh("控制脚本未响应");
+            }
+            process.kill();
+            process.waitForFinished(500);
+            return false;
+        }
+
+        const QByteArray standard_output = process.readAllStandardOutput();
+        const QByteArray standard_error = process.readAllStandardError();
+        if (!standard_output.isEmpty()) {
+            std::printf("FPGA control output:\n%s", standard_output.constData());
+        }
+        if (!standard_error.isEmpty()) {
+            std::fprintf(stderr, "FPGA control error:\n%s", standard_error.constData());
+        }
+        std::printf("FPGA control exit: normal=%s code=%d\n",
+                    process.exitStatus() == QProcess::NormalExit ? "yes" : "no",
+                    process.exitCode());
+        std::fflush(stdout);
+        std::fflush(stderr);
+        if (process.exitStatus() != QProcess::NormalExit ||
+            process.exitCode() != 0) {
+            if (error != nullptr) {
+                const QByteArray message = standard_error.isEmpty()
+                                                ? standard_output
+                                                : standard_error;
+                *error = QString::fromLocal8Bit(message).trimmed();
+                if (error->isEmpty()) {
+                    *error = pcie_qt_ui::Zh("返回失败");
+                }
+            }
+            return false;
+        }
+        return true;
+    }
+
     void ShowOperationMessage(const QString& message) {
         const QString normalized = message.trimmed();
         if (!normalized.isEmpty() &&
@@ -740,7 +890,7 @@ private:
                     }
                 });
         connect(worker_, &QThread::finished, worker_, &QObject::deleteLater);
-        ui_.startButton->setText(pcie_qt_ui::Zh("暂停"));
+        ui_.startButton->setText(pcie_qt_ui::Zh("暂停显示"));
         ui_.modeComboBox->setEnabled(false);
         ShowOperationMessage(pcie_qt_ui::Zh("正在启动"));
         ui_run_timer_.restart();
@@ -994,6 +1144,11 @@ private:
     int latest_frame_height_;
     int latest_frame_stride_;
     int latest_frame_id_;
+    int fpga_display_mode_;
+    int fpga_roi_x_;
+    int fpga_roi_y_;
+    int fpga_roi_w_;
+    int fpga_roi_h_;
     QElapsedTimer ui_run_timer_;
     uint64_t ui_painted_frames_;
     double ui_frame_handoff_ms_;

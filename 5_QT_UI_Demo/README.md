@@ -12,39 +12,31 @@
 
 Qt 目标直接复用第 3 阶段的 `main_ppocr.cc`、PCIe 采集、YOLO 检测、PP-OCR 识别、车牌规则、
 Tracker 和 RGA 叠加代码，同时复用第 4 阶段的交通后处理、时序 Tracker、违法规则和叠加层。
+右侧面板提供 FPGA BAR0 预处理控制，支持旁路、亮度、对比度和 ROI 放大预览；控制配置独立于
+三种识别模式，模型和规则始终处理完整 `1280×720` PCIe 帧。
 视频识别的共享车牌 Tracker 已加入高速首联尺寸门、真实观测速度、受限加速度和最多 8 帧
 短检测空窗预测，用于补偿约 2–4 帧异步推理延迟；该变化只作用于项目 3/项目 5 的车牌
 跟踪，不改变行人违法检测 Tracker。
 当前仍需在 Ubuntu 20.04 交叉编译，并在 RK3568 + FPGA 实链路复测。
 
-## 微调模型独立 Demo
+## 唯一部署 YOLO 模型
 
-默认 demo 与微调 demo 由同一次构建生成，复用完全相同的 C/C++ 源文件、界面、PP-OCR
-模型、Tracker 和后处理逻辑，只隔离车牌 YOLO RKNN、安装目录与启动脚本：
-
-| 项目 | 默认 demo | 微调 demo |
-|---|---|---|
-| 安装目录 | `yolov8_ppocr_pcie_qt_ui/` | `yolov8_ppocr_pcie_qt_ui_finetune_demo/` |
-| 可执行文件 | `yolov8_ppocr_pcie_qt_ui` | `yolov8_ppocr_pcie_qt_ui` |
-| 一键脚本 | `run-qt-demo.sh` | `run-finetune-demo.sh` |
-| 车牌 YOLO 源模型 | 项目 3 的 `model/yolov8.rknn` | 项目 3 的 `model/finetune_i8.rknn` |
-| 运行时模型名 | `model/yolov8.rknn` | `model/yolov8.rknn` |
-| `BOX_THRESH` | `0.55` | `0.55` |
-
-微调模型从
+板端测试已确认微调模型可直接使用，因此项目 5 只生成一个
+`yolov8_ppocr_pcie_qt_ui/` 安装包和一个 `run-qt-demo.sh` 启动入口。部署模型来自
 `../2_Model_Conversion_PC_Simulation/yolov8/model/finetune_i8.rknn`
-复制到 `../3_NPU_Yolov8_PPOCR_Demo/model/finetune_i8.rknn`，两份文件大小均为
+复制到 `../3_NPU_Yolov8_PPOCR_Demo/model/finetune_i8.rknn`，文件大小为
 `4,634,120` 字节，SHA-256 均为
 `E11C5A8E69C34EC2FC3DA45C81A070EECC88D177EE75374830D861DCF19CA30F`。
-原 `model/yolov8.rknn` 不会被覆盖。
+构建时它被重命名为唯一安装包内的 `model/yolov8.rknn`；`build-linux.sh` 会逐字节检查
+安装结果与源微调模型一致，并删除旧构建可能残留的第二套微调包目录。
 
 两个模式入口都从可执行文件所在目录加载同一个
 `model/yolov8.rknn`：`RunPpocrPcieDemo()` 用于视频模式，
-`RunPpocrPcieImageDemo()` 用于图片模式。因此微调安装目录中的图片、视频模式都会使用
-微调 RKNN，不会回退到默认模型。
+`RunPpocrPcieImageDemo()` 用于图片模式。因此图片和视频模式都会使用微调 RKNN，不存在
+默认/微调版本切换。项目 3 原 `model/yolov8.rknn` 仍保留给其独立命令行 Demo，项目 5 不再引用。
 
 微调训练的 F1-confidence 曲线峰值分别约为 val `0.676`、固定 test `0.602`；
-按兼容优先的部署决定，微调 demo 保持已经用于 PT/ONNX 一致性检查的 `conf=0.55`，
+唯一 Qt 版本保持已经用于 PT/ONNX 一致性检查的 `conf=0.55`，
 不引入阈值差异。曲线峰值只作为后续板端 A/B 调参依据。
 
 ## 开发记录
@@ -84,12 +76,14 @@ Qt 队列最多保留 2 个待绘制事件；界面落后时主动丢弃旧帧�
 │       └── simhei.ttf
 ├── CMakeLists.txt
 ├── build-linux.sh
-├── run-finetune-demo.sh
+├── fpga_preproc_ctrl.sh
 ├── run-qt-demo.sh
 ├── README.md
 ├── DEVELOPMENT_RECORD.md
 ├── include/
 │   └── pcie_qt_ui_helpers.h
+├── tools/
+│   └── fpga_bar0_ctrl_test.c
 └── src/
     ├── main_pcie_qt.cc
     ├── mainwindow.ui
@@ -171,29 +165,15 @@ install/rk356x_linux_aarch64/rknn_yolov8_ppocr_qt_ui_demo/
 ├── lib/
 │   ├── librga.so
 │   └── librknnrt.so
-├── yolov8_ppocr_pcie_qt_ui/
+└── yolov8_ppocr_pcie_qt_ui/
     ├── yolov8_ppocr_pcie_qt_ui
     ├── run-qt-demo.sh
+    ├── fpga_bar0_ctrl_test
+    ├── fpga_preproc_ctrl.sh
     ├── pango_pci_driver.ko
     ├── assets/
     │   └── fonts/
     │       └── simhei.ttf
-    └── model/
-        ├── yolov8.rknn
-        ├── labels_list.txt
-        ├── ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn
-        ├── ppocrv4_rec14_fold_affine_1x1_rk3568_fp16.rknn
-        ├── cblprd_plate_dict.txt
-        └── traffic/
-            ├── yolov8_traffic_i8.rknn
-            ├── labels_list.txt
-            └── traffic_roi.conf
-└── yolov8_ppocr_pcie_qt_ui_finetune_demo/
-    ├── yolov8_ppocr_pcie_qt_ui
-    ├── run-finetune-demo.sh
-    ├── run-qt-demo.sh
-    ├── pango_pci_driver.ko
-    ├── assets/fonts/simhei.ttf
     └── model/
         ├── yolov8.rknn
         ├── labels_list.txt
@@ -214,13 +194,15 @@ install/rk356x_linux_aarch64/rknn_yolov8_ppocr_qt_ui_demo/
 adb devices
 ```
 
-推送完整安装目录：
+只推送唯一 Qt 包和公共动态库目录，避免旧构建树中任何遗留目录进入板端：
 
 ```bash
 adb shell rm -rf /userdata/rknn_yolov8_ppocr_qt_ui_demo
-adb push \
-  install/rk356x_linux_aarch64/rknn_yolov8_ppocr_qt_ui_demo \
-  /userdata/
+adb shell mkdir -p /userdata/rknn_yolov8_ppocr_qt_ui_demo
+adb push install/rk356x_linux_aarch64/rknn_yolov8_ppocr_qt_ui_demo/lib \
+  /userdata/rknn_yolov8_ppocr_qt_ui_demo/
+adb push install/rk356x_linux_aarch64/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui \
+  /userdata/rknn_yolov8_ppocr_qt_ui_demo/
 ```
 
 核对文件：
@@ -252,23 +234,16 @@ chmod +x ./run-qt-demo.sh
 ./run-qt-demo.sh
 ```
 
-微调版使用独立目录和一键脚本：
-
-```bash
-adb shell
-cd /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui_finetune_demo
-chmod +x ./run-finetune-demo.sh
-./run-finetune-demo.sh
-```
-
 显示器已经处于目标模式时会输出：
 
 ```text
 Display output HDMI-...: keeping native 1920x1080.
 ```
 
-整屏按原生 1920×1080 逻辑像素划分：左上是固定 1280×720 视频，左下是 1280×360
-运行/PCIe 状态，右侧是 640×1080 模式、结果、运行提示和控制区。视频逐帧不做 Qt 缩放，
+整屏按原生 1920×1080 逻辑像素划分：左侧顶部是 1280×178 运行/PCIe 状态，中部是带独立
+方框边界的固定 1280×720 视频，底部是 1280×182 系统资源监控；右侧是 640×1080 模式、
+FPGA 参数、结果、运行提示和控制区。旁路、亮度和
+对比度模式的视频逐帧不做 Qt 缩放，
 右侧和下方 UI 则直接按 1080p 原生分辨率绘制，因此视频内叠加文字和 UI 字体都避免二次插值。
 Qt 自动高 DPI 缩放仍被关闭，逻辑缩放固定为 1。
 
@@ -305,9 +280,14 @@ xrandr --current
 的伪随机显示扰动，并显示 `75%～95%` 的伪随机展示置信度，两者均不参与取色。斑马线输入多边形
 会在板端围绕顶点中心内缩 3%，违法规则恢复为“稳定红灯且 person 位于内缩后 ROI 内立即判定”。
 
-程序启动后先选择模式，再点击“开始”进入 PCIe 采集和识别；采集运行时模式下拉框锁定，点击
-“暂停”后开放模式选择。暂停后不改变模式并点击“继续”，会复用当前工作线程、模型和 PCIe
-文件描述符；若改选其他模式，则先完整结束并释放旧后端，再等待用户点击“开始”启动新后端。
+程序启动后先选择模式，再点击“开始显示”进入 PCIe 采集和识别；采集运行时模式下拉框锁定，
+点击“暂停显示”后开放模式选择。暂停后不改变模式并点击“继续显示”，会复用当前工作线程、
+模型和 PCIe 文件描述符；若改选其他模式，则先完整结束并释放旧后端，再等待用户点击
+“开始显示”启动新后端。
+FPGA 参数可在任一识别模式或暂停显示期间应用：选择模式并填写参数、原始帧坐标 `X/Y/W/H`，
+再点击“应用FPGA参数”。应用成功以各 BAR0 寄存器写后读回一致为准。ROI 放大模式要求区域完整
+位于 `1280×720` 内，只裁剪放大 Qt 预览；推理、图片换图检测、交通规则和“保存图片”仍使用
+完整叠加帧。正常启动和退出会恢复旁路、参数 128、ROI 0；异常断电或 `kill -9` 无法保证恢复。
 图片识别模式与视频模式使用同一 PCIe 静态画面输入，不提供本地文件选择器。后端会检测原始
 BGR565 静态画面变化：换图后立即清空上一张图片的结果和投票，仅接收新图片 generation 的
 推理结果；新车牌连续 2 次独立推理文本一致并通过 GA 36 校验后，当前结果表才显示该车牌。
@@ -340,7 +320,9 @@ kill -TERM $(pidof yolov8_ppocr_pcie_qt_ui)
 
 - 模式下拉框显示 `视频识别 / 图片识别 / 行人违法检测`。
 - 识别运行时模式选择锁定；暂停后可以选择其他模式，切换时旧后端先完成退出，新模式需要重新
-  点击“开始”。
+  点击“开始显示”。
+- FPGA 下拉框显示 `旁路原图 / 亮度调节 / 对比度增强 / ROI放大预览`，参数成功时运行提示显示
+  “FPGA参数已写入并读回”；ROI 放大仅改变预览，不改变三个模式的后端输入。
 - 视频识别叠加车牌框、类型和识别文本；行人违法检测叠加斑马线 ROI、信号灯、person ID
   和违法状态。
 - 图片识别使用 FP16 PP-OCR；同一静态图片复用视频模式的连续 2 次相同文本确认和合法结果投票，
@@ -478,8 +460,8 @@ Qt 预览固定为 1280×720，输入帧通过 `QPixmap::fromImage()` 直接提�
 `Qt preview: source=... viewport=... output=... scaling=disabled` 核对三者均为 1280×720，
 退出时的 `Average Qt frame prepare/handoff` 用于比较不同显示器下的 Qt 帧准备开销。
 
-左下状态区的上半部紧凑显示运行状态和 PCIe 状态，下半部显示最近60秒的 CPU 温度、NPU负载
-和内存占用。监控控件每秒采样一次，只用 Qt `QPainter` 绘制三组细柱，不依赖 Qt Charts、
+左侧顶部紧凑显示运行状态和 PCIe 状态，底部显示最近60秒的 CPU 温度、NPU负载和内存占用，
+中间视频区域由独立方框与两者分隔。监控控件每秒采样一次，只用 Qt `QPainter` 绘制三组细柱，不依赖 Qt Charts、
 OpenGL 或外部命令。CPU/NPU 对应的 sysfs 节点不可读时显示 `--`，不会阻止视频识别运行。
 
 右侧运行提示以Qt采集开关为唯一主状态：运行时固定显示“正在采集”，暂停时固定显示

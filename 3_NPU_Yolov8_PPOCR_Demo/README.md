@@ -7,10 +7,10 @@
 
 MPP 视频和文件型单图片入口已删除，构建不再生成 `yolov8_lpr_video_demo` 或 `yolov8_lpr_picture_demo`。新的 `yolov8_ppocr_pcie_demo` 继续复用原 PCIe 采集、6 槽帧池、每 2 帧推理一次、带高速首联尺寸门、真实观测速度、受限加速度和 8 帧短空窗预测的 DIoU 跟踪、长度截断、逐位合法性校验、有效结果投票、连续 2 次命中后显示、RGA 叠加和 DRM 输出逻辑。项目 5 的“图片识别”仍读取 PCIe 静态画面，不是文件选择器；它使用 FP16 PP-OCR，并以静态图片 generation 隔离跨图片结果后复用 Tracker 稳定确认。当前改动已完成 Windows 工作区编码，尚待 Ubuntu aarch64 交叉编译和 RK3568 + FPGA 实链路验证。
 
-`model/finetune_i8.rknn` 是项目 5 微调版 Qt demo 的独立车牌检测模型副本；
-本目录原 `model/yolov8.rknn` 和命令行 demo 默认部署行为保持不变。微调模型由项目 5
-构建系统只安装到 `yolov8_ppocr_pcie_qt_ui_finetune_demo/`，运行时阈值与原版一致为
-`BOX_THRESH=0.55`。
+`model/finetune_i8.rknn` 是项目 5 唯一 Qt 部署版本使用的车牌检测模型源文件；项目 5 构建时
+将其重命名安装为 `yolov8_ppocr_pcie_qt_ui/model/yolov8.rknn`，图片与视频模式统一加载该模型，
+阈值保持 `BOX_THRESH=0.55`。本目录原 `model/yolov8.rknn` 只继续服务项目 3 独立命令行 Demo，
+不再由项目 5 引用。
 
 开发过程、模型验证和性能结论见 [DEVELOPMENT_RECORD.md](DEVELOPMENT_RECORD.md)。
 

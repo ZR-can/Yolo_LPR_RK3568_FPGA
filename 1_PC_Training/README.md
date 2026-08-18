@@ -313,6 +313,38 @@ yellow_single 的 AP50-95 相对旧模型变化为 +0.0053/-0.0007/+0.0305，
 满足采用条件。完整数据审计、配置依据、训练过程、哈希和逐类对比见
 `YOLO_FINETUNE_RECORD_20260726.md`。
 
+#### YOLOv8-OBB 车牌数据集与训练
+
+`scripts/build_yolo_obb_dataset.py` 从 CCPD2019 文件名和 CRPD 原始 txt
+直接读取四角点，构建独立的 `datasets/yolo_obb_640/`。派生图片全部使用
+同卷 NTFS 硬链接，数据目录由 `.gitignore` 忽略，可通过脚本重复构建：
+
+```bash
+cd 1_PC_Training
+python scripts/build_yolo_obb_dataset.py --dry-run
+python scripts/build_yolo_obb_dataset.py --apply
+```
+
+数据配置为 `configs/yolo_obb_config.yaml`，训练参数为
+`configs/yolo_obb_train.yaml`。准备好本地 `yolov8n-obb.pt` 后，可继续使用
+统一训练入口：
+
+```bash
+python scripts/train_yolo.py \
+  --model path/to/yolov8n-obb.pt \
+  --data configs/yolo_obb_config.yaml \
+  --train-config configs/yolo_obb_train.yaml
+```
+
+训练配置使用数据集根目录下自动生成的 `val_balanced.txt` 进行验证。
+该清单不重复图片、不使用 train/test 源图，常见三类各约 1,000 个框，
+`other` 使用全部真实验证样本；完整 `images/val/` 仍保留用于按数据源复核。
+
+OBB 数据的来源配额、CRPD `type=2` 过滤、`yellow_single` 总计 2 份、
+`other` 总计 4 份、数据质量处理和全量硬链接验证结果见
+`YOLO_OBB_DATASET_RECORD_20260731.md`。构建脚本会固定排除
+已确认存在空标签或退化角点的 5 张 CRPD 异常源图，避免后续重建再次混入。
+
 ### 3. PaddleOCR 官方训练框架
 
 `PaddleOCR/` 是从 PaddlePaddle/PaddleOCR 官方仓库直接克隆的独立训练工程，当前使用 `release/2.7` 分支、提交 `8cce9b6fd7ccb50226d0c38f94054d81c29b8184`。该目录保留自己的 `.git`，并已由项目根目录 `.gitignore` 整体忽略，官方源码和后续本地训练产物不会混入本工程提交。

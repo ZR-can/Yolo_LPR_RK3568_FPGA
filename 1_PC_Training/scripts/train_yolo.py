@@ -98,8 +98,16 @@ def validate_data_config(data_path: Path) -> None:
         dataset_root = (data_path.parent / dataset_root).resolve()
     for split in ("train", "val", "test"):
         split_path = dataset_root / data_config[split]
-        if not split_path.is_dir():
-            raise FileNotFoundError(f"{split} 图片目录不存在：{split_path}")
+        if not (
+            split_path.is_dir()
+            or (
+                split_path.is_file()
+                and split_path.suffix.lower() == ".txt"
+            )
+        ):
+            raise FileNotFoundError(
+                f"{split} 图片目录或清单不存在：{split_path}"
+            )
 
 
 def validate_train_config(config_path: Path) -> dict[str, Any]:

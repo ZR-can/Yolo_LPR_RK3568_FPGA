@@ -89,7 +89,10 @@ target_include_directories(traffic_qt_backend PRIVATE
 )
 
 set(TARGET_NAME yolov8_ppocr_pcie_qt_ui)
-set(FINETUNE_PACKAGE_NAME yolov8_ppocr_pcie_qt_ui_finetune_demo)
+set(FPGA_CTRL_TOOL_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/fpga_bar0_ctrl_test.c")
+set(FPGA_CTRL_SCRIPT
+    "${CMAKE_CURRENT_SOURCE_DIR}/fpga_preproc_ctrl.sh")
 add_executable(${TARGET_NAME} ${QT_UI_SRCS} ${PPOCR_BACKEND_SRCS})
 set_target_properties(${TARGET_NAME} PROPERTIES
     AUTOMOC ON
@@ -123,9 +126,13 @@ target_link_libraries(${TARGET_NAME}
     Threads::Threads
 )
 
+add_executable(fpga_bar0_ctrl_test "${FPGA_CTRL_TOOL_SOURCE}")
+target_include_directories(fpga_bar0_ctrl_test PRIVATE
+    "${TRAFFIC_DEMO_ROOT}/include"
+)
+
 set(PCIE_DRIVER_MODULE "${PPOCR_DEMO_ROOT}/pango_pci_driver.ko")
-set(YOLO_MODEL_FILE "${PPOCR_DEMO_ROOT}/model/yolov8.rknn")
-set(YOLO_FINETUNE_MODEL_FILE
+set(YOLO_DEPLOY_MODEL_FILE
     "${PPOCR_DEMO_ROOT}/model/finetune_i8.rknn")
 set(LABEL_FILE "${PPOCR_DEMO_ROOT}/model/labels_list.txt")
 set(PPOCR_MODEL_FILE
@@ -139,13 +146,10 @@ set(TRAFFIC_ROI_CONFIG_FILE "${TRAFFIC_DEMO_ROOT}/model/traffic_roi.conf")
 set(CHINESE_FONT_FILE
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/simhei.ttf")
 set(QT_LAUNCH_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/run-qt-demo.sh")
-set(FINETUNE_LAUNCH_SCRIPT
-    "${CMAKE_CURRENT_SOURCE_DIR}/run-finetune-demo.sh")
 
 foreach(REQUIRED_FILE
         "${PCIE_DRIVER_MODULE}"
-        "${YOLO_MODEL_FILE}"
-        "${YOLO_FINETUNE_MODEL_FILE}"
+        "${YOLO_DEPLOY_MODEL_FILE}"
         "${LABEL_FILE}"
         "${PPOCR_MODEL_FILE}"
         "${PPOCR_IMAGE_MODEL_FILE}"
@@ -154,16 +158,21 @@ foreach(REQUIRED_FILE
         "${TRAFFIC_LABEL_FILE}"
         "${TRAFFIC_ROI_CONFIG_FILE}"
         "${CHINESE_FONT_FILE}"
-        "${QT_LAUNCH_SCRIPT}"
-        "${FINETUNE_LAUNCH_SCRIPT}")
+        "${FPGA_CTRL_TOOL_SOURCE}"
+        "${FPGA_CTRL_SCRIPT}"
+        "${QT_LAUNCH_SCRIPT}")
     if (NOT EXISTS "${REQUIRED_FILE}")
         message(FATAL_ERROR "Required deployment file is missing: ${REQUIRED_FILE}")
     endif()
 endforeach()
 
 install(TARGETS ${TARGET_NAME} DESTINATION ${TARGET_NAME})
+install(TARGETS fpga_bar0_ctrl_test DESTINATION ${TARGET_NAME})
+install(PROGRAMS "${FPGA_CTRL_SCRIPT}" DESTINATION ${TARGET_NAME})
+install(FILES "${YOLO_DEPLOY_MODEL_FILE}"
+        DESTINATION ${TARGET_NAME}/model
+        RENAME yolov8.rknn)
 install(FILES
-    "${YOLO_MODEL_FILE}"
     "${LABEL_FILE}"
     "${PPOCR_MODEL_FILE}"
     "${PPOCR_IMAGE_MODEL_FILE}"
@@ -180,31 +189,3 @@ install(FILES
 )
 install(FILES "${PCIE_DRIVER_MODULE}" DESTINATION ${TARGET_NAME})
 install(PROGRAMS "${QT_LAUNCH_SCRIPT}" DESTINATION ${TARGET_NAME})
-
-install(TARGETS ${TARGET_NAME}
-        DESTINATION ${FINETUNE_PACKAGE_NAME})
-install(FILES "${YOLO_FINETUNE_MODEL_FILE}"
-        DESTINATION ${FINETUNE_PACKAGE_NAME}/model
-        RENAME yolov8.rknn)
-install(FILES
-    "${LABEL_FILE}"
-    "${PPOCR_MODEL_FILE}"
-    "${PPOCR_IMAGE_MODEL_FILE}"
-    "${PPOCR_DICT_FILE}"
-    DESTINATION ${FINETUNE_PACKAGE_NAME}/model
-)
-install(FILES "${CHINESE_FONT_FILE}"
-        DESTINATION ${FINETUNE_PACKAGE_NAME}/assets/fonts)
-install(FILES
-    "${TRAFFIC_MODEL_FILE}"
-    "${TRAFFIC_LABEL_FILE}"
-    "${TRAFFIC_ROI_CONFIG_FILE}"
-    DESTINATION ${FINETUNE_PACKAGE_NAME}/model/traffic
-)
-install(FILES "${PCIE_DRIVER_MODULE}"
-        DESTINATION ${FINETUNE_PACKAGE_NAME})
-install(PROGRAMS
-    "${QT_LAUNCH_SCRIPT}"
-    "${FINETUNE_LAUNCH_SCRIPT}"
-    DESTINATION ${FINETUNE_PACKAGE_NAME}
-)

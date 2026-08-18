@@ -1,0 +1,53 @@
+# 从 yolov8n-obb.pt 开始训练；保持 640 输入以兼顾 RK3568 部署。
+task: obb
+epochs: 100
+patience: 20
+batch: 16
+imgsz: 640
+save: true
+save_period: 10
+cache: false
+device: "0"
+workers: 8
+project: D:/Yolo_LPR_RK3568_FPGA_Project/1_PC_Training/scripts/runs/obb_train_results
+name: yolov8n_plate_obb_640
+exist_ok: false
+pretrained: true
+optimizer: AdamW
+verbose: true
+seed: 20260731
+deterministic: true
+rect: false
+cos_lr: true
+close_mosaic: 10
+resume: false
+amp: true
+
+# OBB 从预训练模型重新适配车牌几何，学习率高于旧 detect 权重微调。
+lr0: 0.001
+lrf: 0.05
+momentum: 0.9
+weight_decay: 0.0005
+warmup_epochs: 3.0
+warmup_momentum: 0.8
+warmup_bias_lr: 0.0
+
+box: 7.5
+cls: 0.5
+dfl: 1.5
+
+# 保持颜色类别语义；使用温和几何增强并加强小目标缩放。
+hsv_h: 0.005
+hsv_s: 0.3
+hsv_v: 0.3
+degrees: 10.0
+translate: 0.1
+scale: 0.5
+shear: 2.0
+perspective: 0.0005
+flipud: 0.0
+fliplr: 0.5
+mosaic: 0.7
+mixup: 0.0
+cutmix: 0.0
+copy_paste: 0.0

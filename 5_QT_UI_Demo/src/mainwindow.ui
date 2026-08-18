@@ -35,38 +35,19 @@
        <property name="bottomMargin"><number>0</number></property>
        <property name="spacing"><number>0</number></property>
        <item>
-        <widget class="QLabel" name="videoLabel">
+        <widget class="QWidget" name="leftTopStatusPanel">
          <property name="minimumSize">
-          <size><width>1280</width><height>720</height></size>
+          <size><width>1280</width><height>178</height></size>
          </property>
          <property name="maximumSize">
-          <size><width>1280</width><height>720</height></size>
+          <size><width>1280</width><height>178</height></size>
          </property>
-         <property name="text">
-          <string>等待图像</string>
-         </property>
-         <property name="alignment">
-          <set>Qt::AlignCenter</set>
-         </property>
-         <property name="scaledContents">
-          <bool>false</bool>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QWidget" name="leftBottomPanel">
-         <property name="minimumSize">
-          <size><width>1280</width><height>360</height></size>
-         </property>
-         <property name="maximumSize">
-          <size><width>1280</width><height>360</height></size>
-         </property>
-         <layout class="QVBoxLayout" name="leftBottomLayout">
+         <layout class="QVBoxLayout" name="leftTopStatusLayout">
           <property name="leftMargin"><number>12</number></property>
           <property name="topMargin"><number>12</number></property>
           <property name="rightMargin"><number>12</number></property>
           <property name="bottomMargin"><number>12</number></property>
-          <property name="spacing"><number>10</number></property>
+          <property name="spacing"><number>0</number></property>
           <item>
            <widget class="QWidget" name="statusRowPanel">
             <property name="minimumSize">
@@ -202,6 +183,71 @@
             </layout>
            </widget>
           </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QWidget" name="videoPanel">
+         <property name="minimumSize">
+          <size><width>1280</width><height>720</height></size>
+         </property>
+         <property name="maximumSize">
+          <size><width>1280</width><height>720</height></size>
+         </property>
+         <widget class="QLabel" name="videoLabel">
+          <property name="geometry">
+           <rect>
+            <x>0</x>
+            <y>0</y>
+            <width>1280</width>
+            <height>720</height>
+           </rect>
+          </property>
+          <property name="minimumSize">
+           <size><width>1280</width><height>720</height></size>
+          </property>
+          <property name="maximumSize">
+           <size><width>1280</width><height>720</height></size>
+          </property>
+          <property name="text">
+           <string>等待图像</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignCenter</set>
+          </property>
+          <property name="scaledContents">
+           <bool>false</bool>
+          </property>
+         </widget>
+         <widget class="QFrame" name="videoBorderFrame">
+          <property name="geometry">
+           <rect>
+            <x>0</x>
+            <y>0</y>
+            <width>1280</width>
+            <height>720</height>
+           </rect>
+          </property>
+          <property name="frameShape">
+           <enum>QFrame::NoFrame</enum>
+          </property>
+         </widget>
+        </widget>
+       </item>
+       <item>
+        <widget class="QWidget" name="leftSystemPanel">
+         <property name="minimumSize">
+          <size><width>1280</width><height>182</height></size>
+         </property>
+         <property name="maximumSize">
+          <size><width>1280</width><height>182</height></size>
+         </property>
+         <layout class="QVBoxLayout" name="leftSystemLayout">
+          <property name="leftMargin"><number>12</number></property>
+          <property name="topMargin"><number>10</number></property>
+          <property name="rightMargin"><number>12</number></property>
+          <property name="bottomMargin"><number>12</number></property>
+          <property name="spacing"><number>0</number></property>
           <item>
            <widget class="QGroupBox" name="systemMonitorGroup">
             <property name="title">
@@ -220,10 +266,10 @@
           </item>
          </layout>
         </widget>
+          </item>
+         </layout>
+        </widget>
        </item>
-      </layout>
-     </widget>
-    </item>
     <item>
      <widget class="QWidget" name="sidePanel">
       <property name="minimumSize">
@@ -295,6 +341,118 @@
         </widget>
        </item>
        <item>
+        <widget class="QGroupBox" name="fpgaControlGroup">
+         <property name="title">
+          <string>FPGA预处理控制</string>
+         </property>
+         <layout class="QGridLayout" name="fpgaControlLayout">
+          <property name="leftMargin"><number>10</number></property>
+          <property name="topMargin"><number>10</number></property>
+          <property name="rightMargin"><number>10</number></property>
+          <property name="bottomMargin"><number>10</number></property>
+          <property name="horizontalSpacing"><number>10</number></property>
+          <property name="verticalSpacing"><number>6</number></property>
+          <item row="0" column="0">
+           <widget class="QLabel" name="fpgaModeKeyLabel">
+            <property name="text"><string>预处理模式</string></property>
+           </widget>
+          </item>
+          <item row="0" column="1" colspan="3">
+           <widget class="QComboBox" name="fpgaModeComboBox">
+            <property name="minimumSize"><size><width>0</width><height>34</height></size></property>
+            <item>
+             <property name="text"><string>旁路原图</string></property>
+             <property name="userData"><string>0</string></property>
+            </item>
+            <item>
+             <property name="text"><string>亮度调节</string></property>
+             <property name="userData"><string>1</string></property>
+            </item>
+            <item>
+             <property name="text"><string>对比度增强</string></property>
+             <property name="userData"><string>2</string></property>
+            </item>
+            <item>
+             <property name="text"><string>ROI放大预览</string></property>
+             <property name="userData"><string>3</string></property>
+            </item>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="fpgaThresholdKeyLabel">
+            <property name="text"><string>调节参数</string></property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QSpinBox" name="fpgaThresholdSpinBox">
+            <property name="minimumSize"><size><width>112</width><height>34</height></size></property>
+            <property name="alignment"><set>Qt::AlignLeft|Qt::AlignVCenter</set></property>
+            <property name="maximum"><number>255</number></property>
+            <property name="value"><number>128</number></property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="fpgaRoiKeyLabel">
+            <property name="text"><string>位置 X</string></property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QSpinBox" name="fpgaRoiXSpinBox">
+            <property name="minimumSize"><size><width>96</width><height>34</height></size></property>
+            <property name="alignment"><set>Qt::AlignLeft|Qt::AlignVCenter</set></property>
+            <property name="maximum"><number>1279</number></property>
+            <property name="value"><number>100</number></property>
+           </widget>
+          </item>
+          <item row="2" column="2">
+           <widget class="QLabel" name="fpgaRoiYKeyLabel">
+            <property name="text"><string>位置 Y</string></property>
+           </widget>
+          </item>
+          <item row="2" column="3">
+           <widget class="QSpinBox" name="fpgaRoiYSpinBox">
+            <property name="minimumSize"><size><width>96</width><height>34</height></size></property>
+            <property name="alignment"><set>Qt::AlignLeft|Qt::AlignVCenter</set></property>
+            <property name="maximum"><number>719</number></property>
+            <property name="value"><number>100</number></property>
+           </widget>
+          </item>
+          <item row="3" column="0">
+           <widget class="QLabel" name="fpgaRoiSizeKeyLabel">
+            <property name="text"><string>尺寸 W</string></property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QSpinBox" name="fpgaRoiWSpinBox">
+            <property name="minimumSize"><size><width>96</width><height>34</height></size></property>
+            <property name="alignment"><set>Qt::AlignLeft|Qt::AlignVCenter</set></property>
+            <property name="maximum"><number>1280</number></property>
+            <property name="value"><number>512</number></property>
+           </widget>
+          </item>
+          <item row="3" column="2">
+           <widget class="QLabel" name="fpgaRoiHKeyLabel">
+            <property name="text"><string>尺寸 H</string></property>
+           </widget>
+          </item>
+          <item row="3" column="3">
+           <widget class="QSpinBox" name="fpgaRoiHSpinBox">
+            <property name="minimumSize"><size><width>96</width><height>34</height></size></property>
+            <property name="alignment"><set>Qt::AlignLeft|Qt::AlignVCenter</set></property>
+            <property name="maximum"><number>720</number></property>
+            <property name="value"><number>256</number></property>
+           </widget>
+          </item>
+          <item row="4" column="0" colspan="4">
+           <widget class="QPushButton" name="fpgaApplyButton">
+            <property name="minimumSize"><size><width>0</width><height>36</height></size></property>
+            <property name="text"><string>应用FPGA参数</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
         <widget class="QGroupBox" name="resultGroup">
          <property name="title">
           <string>识别结果</string>
@@ -305,9 +463,9 @@
           <property name="rightMargin"><number>10</number></property>
           <property name="bottomMargin"><number>10</number></property>
           <item>
-           <widget class="QTableWidget" name="resultTableWidget">
-            <property name="minimumSize">
-             <size><width>0</width><height>420</height></size>
+            <widget class="QTableWidget" name="resultTableWidget">
+             <property name="minimumSize">
+              <size><width>0</width><height>240</height></size>
             </property>
             <property name="columnCount">
              <number>3</number>
@@ -337,9 +495,9 @@
           <property name="rightMargin"><number>10</number></property>
           <property name="bottomMargin"><number>10</number></property>
           <item>
-           <widget class="QLabel" name="operationMessageLabel">
-            <property name="minimumSize">
-             <size><width>0</width><height>66</height></size>
+            <widget class="QLabel" name="operationMessageLabel">
+             <property name="minimumSize">
+              <size><width>0</width><height>48</height></size>
             </property>
             <property name="text">
              <string>等待PCIe帧数据</string>
@@ -364,7 +522,7 @@
             <size><width>0</width><height>56</height></size>
            </property>
            <property name="text">
-            <string>开始</string>
+             <string>开始显示</string>
            </property>
           </widget>
          </item>

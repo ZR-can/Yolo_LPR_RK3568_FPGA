@@ -1,5 +1,12 @@
 # 3_NPU_Yolov8_PPOCR_Demo 开发记录
 
+## 2026-08-17 微调 YOLO RKNN 改为项目 5 唯一部署模型
+
+- 板端测试确认 `model/finetune_i8.rknn` 可直接用于 Qt 图片/视频识别；项目 5 已取消原版与
+  微调版双包，唯一包安装时把该文件重命名为运行时契约 `model/yolov8.rknn`。
+- 本目录原 `model/yolov8.rknn` 保留给项目 3 独立命令行 Demo，项目 5 构建系统不再引用；
+  两个模型文件本身及项目 3 推理源码均未改动。
+
 操作和部署步骤见 [README.md](README.md)。
 
 ## 2026-07-27 图片模式多车牌结果传递
@@ -279,6 +286,8 @@
 - QA：模板帧映射检查通过，模板一致性检查通过，布局检查 0 error / 0 warning；PPTX 包含 2 个 slide XML、51 个 ZIP 条目、0 个零字节条目。
 
 ## 2026-07-27 微调 YOLO RKNN 独立副本
+
+> 此处记录原双版本方案；项目 5 当前部署方式已由上方 2026-08-17 单版本方案取代。
 
 - 将
   `../2_Model_Conversion_PC_Simulation/yolov8/model/finetune_i8.rknn`

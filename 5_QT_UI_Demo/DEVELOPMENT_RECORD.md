@@ -1,5 +1,118 @@
 # 5_QT_UI_Demo 开发记录
 
+## 2026-08-17 单版本板端启动复测仍为 PCIe 零帧
+
+- RK3568 使用唯一目录 `yolov8_ppocr_pcie_qt_ui/` 启动成功：X11/LightDM、原生
+  `1920×1080`、交通 ROI、车牌 YOLO RKNN、PP-OCR RKNN、PCIe Gen2 x2、推理线程和显示线程
+  均完成初始化。该日志证明单包路径和微调模型至少可以正常加载，但由于没有输入帧，尚未执行
+  一次实际 YOLO/PP-OCR 推理，不能用本次日志评价识别效果。
+- 启动和退出时的 FPGA 默认恢复均成功：BAR0 `0x150/0x160/0x170/0x180` 写入后读回分别为
+  `0/128/0/0`，Qt 子进程正常退出码为 0。日志中的 `FPGA control error:` 只是当前 Qt 把控制
+  脚本写到 stderr 的寄存器尝试轨迹统一加了错误标题，并非控制失败；`QStandardPaths`、
+  Rockchip `libGL` DRI2/DRI3 警告同样未阻止后续初始化。
+- 实际失败点仍在首帧交付之前：运行期间 `last_status=-1 / ready=0`，`EPERM` 最终累计
+  66,823 次，退出统计 `Captured/Display/Inference/Qt painted` 全部为 0，且没有 fatal error。
+  `PCIe: capture started` 只证明 RK 侧 DMA 地址映射完成并向 BAR0 地址 0 写了
+  `0xffffffe5`，不证明 FPGA 已检测到 HDMI `VS/DE`、发起/完成 DMA 或置位整帧完成状态。
+- 下一步不改 Qt、YOLO、PP-OCR 或模型；停止 UI 后用随包工具读取 `--regs`，再执行
+  `--start --poll 30 --delay-ms 100`。若轮询期间 `BAR0+0x140` 的 `frame_done/wr_index` 仍不变，
+  直接检查 FPGA 外部 HDMI 1280×720 输入、`start_flag`、`VS/DE`、视频状态机、DMA 请求/完成和
+  `i_wr_frame_done`；若状态变化但应用仍 `ready=0`，再转查驱动消费/清除完成位路径。
+- 后续工具实测进一步确认当前 FPGA 控制固件有效：`magic=0x46504331 (FPC1)`、
+  `version=0x20260813`，默认状态 `ctrl_status=0x00000080` 表示 `start=0/cfg_writes=8`；执行
+  `--start --regs --poll 30 --delay-ms 100` 后，30 个样本的 `BAR0+0x140` 始终为 0，但轮询末
+  `ctrl_status=0x00000081`，即 `start=1/frame_done=0/wr_index=0/cfg_writes=8`。这已排除旧固件、
+  BAR0 不通和 legacy start 未锁存；`capture_ctrl=0` 不矛盾，因为本次使用地址 0 的 legacy
+  命令，实际启动状态应以 `ctrl_status.start` 为准。工具随后按预期写 stop。
+- 故障现已严格定位在 FPGA `start_flag` 之后、首帧完成之前。先确认 HDMI 接收侧确实存在稳定
+  `pixclk_in/vs_in/de_in`（不能仅凭 FPGA HDMI 输出画面判断），再用 PDS Debugger/ILA 同时观察
+  `start_flag`、同步后的 `VS` 上升沿、视频控制状态 `WAIT→TX_DATA`、DMA 请求/完成握手、
+  `i_wr_frame_done` 和 `wr_index`。若无 `VS`，处理 HDMI 输入/时序；若有 `VS/DE` 但状态机不走，
+  查跨时钟/复位；若状态机和 DMA 已走但完成位始终为 0，查 `pcie_tx_fun` 的帧计数/完成脉冲逻辑。
+
+## 2026-08-17 微调 YOLO 模型收敛为唯一 Qt 版本
+
+- 根据板端测试结论，微调后的 YOLO RKNN 可直接替代原模型；项目 5 不再同时生成默认版和
+  微调版。唯一安装目录保持 `yolov8_ppocr_pcie_qt_ui/`，唯一启动入口保持
+  `run-qt-demo.sh`，避免改变现有板端运行路径和主程序固定模型加载契约。
+- CMake 现在只取项目 3 的 `model/finetune_i8.rknn`，安装时重命名为唯一包内的
+  `model/yolov8.rknn`。视频识别和图片识别继续通过既有入口加载同一文件；行人违法模式、
+  PP-OCR、交通模型、FPGA 控制和 UI 布局均不变。
+- 删除第二套 `yolov8_ppocr_pcie_qt_ui_finetune_demo/` 安装规则及
+  `run-finetune-demo.sh`。`build-linux.sh` 会清理安装树中可能残留的旧微调目录，并用
+  `cmp` 强制检查唯一包的 `model/yolov8.rknn` 与源 `finetune_i8.rknn` 完全一致。
+- 已将当前可重建安装产物中的唯一包模型同步为微调模型，大小为 4,634,120 字节，SHA-256 为
+  `E11C5A8E69C34EC2FC3DA45C81A070EECC88D177EE75374830D861DCF19CA30F`。本机安全策略阻止
+  直接递归删除被忽略的旧生成目录，因此操作手册改为只推送唯一包和 `lib/`；下一次执行
+  `build-linux.sh` 时会由脚本精确清除该遗留目录。
+- 本机验证通过：项目 2 源模型、项目 3 部署源模型和当前唯一安装包模型均为
+  4,634,120 字节且 SHA-256 同为 `E11C5A...A30F`；CMake 只保留一次 Qt 目标安装并明确
+  `RENAME yolov8.rknn`，构建脚本只校验唯一包且包含旧目录精确清理。三个 Shell 脚本
+  `bash -n`、三模式/FPGA 接口保持检查和 `git diff --check` 均通过。当前机器仍缺少
+  aarch64 Qt 交叉构建环境，完整重新链接和 RK3568 单包启动回归待在 Ubuntu/板端完成。
+
+## 2026-08-17 FPGA BAR0 控制工具归位项目 5
+
+- 将仅由 Qt UI 构建和部署的 `fpga_bar0_ctrl_test.c` 从
+  `4_NPU_Yolov8_Traffic_Demo/tools/` 移至 `5_QT_UI_Demo/tools/`，使控制工具、
+  `fpga_preproc_ctrl.sh`、Qt 调用入口和安装规则归属同一模块。项目 4 不再承载与交通检测
+  业务无关的 UI 控制工具。
+- CMake 源路径改为 `${CMAKE_CURRENT_SOURCE_DIR}/tools/fpga_bar0_ctrl_test.c`；工具仍复用
+  项目 4 的 `include/pango_pci.h` 驱动接口定义，生成的可执行文件名、唯一安装位置、
+  BAR0 寄存器协议和板端调用方式均不变。
+- 本机验证通过：旧文件路径不存在且仓库无旧路径引用；新文件按 LF 归一化后与远端来源
+  427 行内容完全一致；CMake 的源文件、项目 4 驱动头文件、唯一安装规则以及
+  控制脚本同目录查找关系完整。`git diff --check`、`build-linux.sh` 和
+  `fpga_preproc_ctrl.sh` 的 `bash -n` 均通过；完整 aarch64 交叉构建仍需在 Ubuntu 完成。
+
+## 2026-08-17 1080P 左侧状态/视频/资源三段式布局
+
+- 左侧 `1280×1080` 从“视频在上、状态与资源在下”重排为三段：顶部
+  `1280×178` 放运行状态和 PCIe 状态，中部 `1280×720` 放原尺寸视频，底部
+  `1280×182` 放最近 60 秒系统资源监控；三段高度严格相加为 1080，右侧
+  `640×1080` 模式、FPGA 控制、结果和按钮区域不变。
+- 视频标签继续保持 `1280×720`、`scaledContents=false`，普通预览仍直接提交完整帧。
+  新增同尺寸透明 `videoBorderFrame` 覆盖层，以 2 像素蓝灰色方框将视频与上下区域隔开；
+  覆盖层不进入布局、不缩小视频内容，并设置为鼠标事件穿透且显式置顶。ROI 放大模式仍只按
+  既有逻辑裁剪/缩放显示，不改变后端完整帧输入。
+- 本机验证通过：XML 层级和唯一控件检查通过；PyQt5 离屏实测顶部状态
+  `(0,0,1280,178)`、视频容器/标签/边框 `(0,178,1280,720)`、底部资源
+  `(0,898,1280,182)`、右侧 `(1280,0,640,1080)`，无重叠或溢出。视频边框覆盖层为鼠标
+  穿透且显式置顶；当前全屏入口、三模式状态处理、图片多结果和 FPGA 控制逻辑保持不变，
+  `git diff --check` 与两个 Shell 脚本 `bash -n` 通过。板端字体/边框观感与实时 FPS 待复测。
+
+## 2026-08-17 1080P UI 接入 FPGA BAR0 预处理控制
+
+- 从 `origin/codex/pio-bar0-debug-20260806` 选择性移植 FPGA 控制功能，保留当前
+  `1920×1080` 全屏分区：左上视频仍为 `1280×720` 原尺寸显示，左下仍为
+  `1280×360` 状态/系统资源区，右侧仍为 `640×1080` 操作面板。右侧新增旁路原图、
+  亮度调节、对比度增强、ROI 放大预览、调节参数和原始帧坐标 `X/Y/W/H` 控件；结果表
+  最小高度由 420 缩至 240，开始/暂停/继续按钮改名为“开始显示/暂停显示/继续显示”。
+- 普通旁路、亮度和对比度模式继续用 `QPixmap::fromImage()` 提交完整 `1280×720`
+  画面，不新增逐帧缩放；只有 BAR0 参数成功写入并读回的 ROI 放大模式才在 Qt 显示侧
+  裁剪 ROI 并缩放到视频标签。该裁剪不改 PCIe 帧、YOLO/PP-OCR 输入、图片 generation
+  检测或行人违法分析，保存图片仍保存后端完整叠加帧。ROI 应完整位于原始
+  `1280×720` 画面内，否则 UI 拒绝应用。
+- FPGA 下拉框和参数输入框统一复用现有深色输入控件样式；离屏布局中控制组、结果区、
+  运行提示和底部按钮按顺序完整落在 `640×1080` 右侧面板内，没有重叠或裁切。
+- 新增 `fpga_bar0_ctrl_test` 与 `fpga_preproc_ctrl.sh`：Qt 通过 `QProcess` 调用控制脚本，
+  将模式、参数、ROI XY/WH 写入 FPGA BAR0 并读回确认，单寄存器失败最多重试 3 次；
+  正常启动和退出恢复旁路、参数 128、ROI 0。控制配置独立于视频/图片/行人模式，切换
+  识别模式不重置 FPGA，暂停显示期间保持既有 PCIe 排空行为并允许重新应用参数。
+- CMake 和 `build-linux.sh` 已把控制工具与脚本安装、检查到当前唯一 Qt 包；
+  `.gitattributes` 单独固定控制脚本为 LF，避免 Windows 检出后以 CRLF 部署导致 `/bin/sh` 失败。
+  当前交通模式四参数 ROI 接口、`traffic_roi.conf`、图片换图检测、多车牌结果表以及
+  `static_image_change_detector.cc` 均保持不变，没有合入远端 800P 分支的接口回退。
+- 本机验证通过：上方三段式重排后再次用 XML 与 PyQt5 离屏实例化确认顶部状态
+  `(0,0,1280,178)`、视频 `(0,178,1280,720)`、底部资源 `(0,898,1280,182)`、右侧
+  `(1280,0,640,1080)`；FPGA 控制组、结果区、运行提示和按钮
+  无重叠/溢出，四种模式文本及 SpinBox 上限正确。`build-linux.sh`、控制脚本 `bash -n`
+  通过，使用无硬件 stub 的 `roi-zoom 128 100 100 512 256` 参数打包结果为
+  mode `3`、XY `0x00640064`、WH `0x01000200`；非法模式返回 2，`git diff --check`
+  通过，控制工具/脚本内容与远端来源按 LF 归一化后完全一致。
+- 当前机器没有可用 WSL 发行版、aarch64 交叉编译器和 ARM64 Qt 运行环境，因此完整项目 5
+  交叉编译、RK3568 BAR0 实际写回、四种 FPGA 预处理效果和三种识别模式板端回归仍待完成。
+
 ## 2026-07-27 图片模式结果栏支持多车牌
 
 - 修复“图片识别”画面已有多个有效车牌框、右侧“当前图片识别结果”却只显示一张的问题。
@@ -839,6 +952,8 @@ focus on RKNN/NPU/postprocess.
   short-dropout tolerance; it does not increase NPU scheduling or display load.
 
 ## 2026-07-27 Independent finetune YOLO Qt demo
+
+> Superseded by the 2026-08-17 single-package deployment recorded at the top of this file.
 
 - Copied
   `2_Model_Conversion_PC_Simulation/yolov8/model/finetune_i8.rknn` to

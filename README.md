@@ -61,6 +61,13 @@
 - `3_NPU_Yolov8_PPOCR_Demo` 的 README 以板端 Demo 使用为主。
 - 分支切换后应避免复用旧的 `build/` 和 `install/` 产物，以免编译对象混淆。
 
+## 2026-08-17 Qt YOLO 模型统一
+
+- RK3568 测试确认微调 YOLO RKNN 可直接使用；项目 5 取消默认版/微调版双包，只保留
+  `yolov8_ppocr_pcie_qt_ui/` 和 `run-qt-demo.sh`。
+- 唯一 Qt 包的 `model/yolov8.rknn` 来自项目 3 的 `model/finetune_i8.rknn`；视频和图片模式
+  统一加载该模型。项目 3 原模型继续保留给独立命令行 Demo。
+
 ## 2026-07-22 交通 Demo 进度
 
 - 八类 INT8 图片 benchmark 已在 RK3568 实板完成首轮测试：流水线平均 `39.071 ms`
@@ -101,6 +108,8 @@
   实链路复测。
 
 ## 2026-07-27 微调 YOLO Qt 独立版本
+
+> 此历史双版本方案已由上方 2026-08-17 单版本方案取代。
 
 - 微调 INT8 模型已从项目 2 复制到项目 3 的 `model/finetune_i8.rknn`，没有覆盖原
   `model/yolov8.rknn`。
