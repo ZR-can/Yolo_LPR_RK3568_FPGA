@@ -35,4 +35,17 @@ int process_ppocr_pipeline(YOLOPPOCRPipelineContext* ctx,
 
 void release_ppocr_pipeline(YOLOPPOCRPipelineContext* ctx);
 
+// Image-mode detector path. It shares only the result/context contract with
+// the video pipeline; the OBB model and postprocess are initialized separately.
+int init_obb_ppocr_pipeline(const char* yolov8_obb_path,
+                            const char* ppocr_path,
+                            const char* dictionary_path,
+                            YOLOPPOCRPipelineContext* ctx);
+
+int process_obb_ppocr_pipeline(YOLOPPOCRPipelineContext* ctx,
+                               image_buffer_t* source_image,
+                               std::vector<PipelineResult>& results);
+
+void release_obb_ppocr_pipeline(YOLOPPOCRPipelineContext* ctx);
+
 #endif  // YOLO_PPOCR_PIPELINE_H

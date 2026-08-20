@@ -257,6 +257,83 @@ int ctc_decode(const float* output,
     return 0;
 }
 
+int run_prepared_input(ppocr_rec_context_t* app_ctx,
+                       ppocr_rec_result_t* result,
+                       ppocr_rec_perf_t* perf,
+                       const Clock::time_point& total_start)
+{
+    rknn_input input;
+    std::memset(&input, 0, sizeof(input));
+    input.index = 0;
+    input.type = RKNN_TENSOR_UINT8;
+    input.fmt = RKNN_TENSOR_NHWC;
+    input.size = static_cast<uint32_t>(app_ctx->input_buffer.size());
+    input.buf = app_ctx->input_buffer.data();
+
+    Clock::time_point stage_start = Clock::now();
+    int ret = rknn_inputs_set(app_ctx->rknn_ctx, 1, &input);
+    Clock::time_point stage_end = Clock::now();
+    perf->input_set_ms = elapsed_ms(stage_start, stage_end);
+    if (ret != RKNN_SUCC) {
+        std::printf("rknn_inputs_set failed: ret=%d\n", ret);
+        return ret;
+    }
+
+    stage_start = Clock::now();
+    ret = rknn_run(app_ctx->rknn_ctx, NULL);
+    stage_end = Clock::now();
+    perf->rknn_run_wall_ms = elapsed_ms(stage_start, stage_end);
+    if (ret != RKNN_SUCC) {
+        std::printf("rknn_run failed: ret=%d\n", ret);
+        return ret;
+    }
+
+    rknn_output output;
+    std::memset(&output, 0, sizeof(output));
+    output.want_float = 1;
+    stage_start = Clock::now();
+    ret = rknn_outputs_get(app_ctx->rknn_ctx, 1, &output, NULL);
+    stage_end = Clock::now();
+    perf->output_get_ms = elapsed_ms(stage_start, stage_end);
+    if (ret != RKNN_SUCC || output.buf == NULL) {
+        std::printf("rknn_outputs_get failed: ret=%d\n", ret);
+        return ret == RKNN_SUCC ? -1 : ret;
+    }
+
+    rknn_perf_run official_perf;
+    std::memset(&official_perf, 0, sizeof(official_perf));
+    const Clock::time_point perf_query_start = Clock::now();
+    ret = rknn_query(app_ctx->rknn_ctx,
+                     RKNN_QUERY_PERF_RUN,
+                     &official_perf,
+                     sizeof(official_perf));
+    const double perf_query_ms = elapsed_ms(perf_query_start, Clock::now());
+    if (ret != RKNN_SUCC || official_perf.run_duration <= 0) {
+        std::printf("RKNN_QUERY_PERF_RUN failed: ret=%d, duration=%lld us\n",
+                    ret,
+                    static_cast<long long>(official_perf.run_duration));
+        rknn_outputs_release(app_ctx->rknn_ctx, 1, &output);
+        return ret == RKNN_SUCC ? -1 : ret;
+    }
+    perf->rknn_official_ms = official_perf.run_duration / 1000.0;
+
+    stage_start = Clock::now();
+    ret = ctc_decode(static_cast<const float*>(output.buf), app_ctx, result);
+    stage_end = Clock::now();
+    perf->postprocess_ms = elapsed_ms(stage_start, stage_end);
+
+    const int release_ret =
+        rknn_outputs_release(app_ctx->rknn_ctx, 1, &output);
+    if (release_ret != RKNN_SUCC) {
+        std::printf("rknn_outputs_release failed: ret=%d\n", release_ret);
+        if (ret == 0) {
+            ret = release_ret;
+        }
+    }
+    perf->total_ms = elapsed_ms(total_start, Clock::now()) - perf_query_ms;
+    return ret;
+}
+
 }  // namespace
 
 int init_ppocr_rec_model(const char* model_path,
@@ -403,74 +480,33 @@ int inference_ppocr_rec_model_roi(ppocr_rec_context_t* app_ctx,
         return ret;
     }
 
-    rknn_input input;
-    std::memset(&input, 0, sizeof(input));
-    input.index = 0;
-    input.type = RKNN_TENSOR_UINT8;
-    input.fmt = RKNN_TENSOR_NHWC;
-    input.size = static_cast<uint32_t>(app_ctx->input_buffer.size());
-    input.buf = app_ctx->input_buffer.data();
+    return run_prepared_input(app_ctx, result, perf, total_start);
+}
 
-    stage_start = Clock::now();
-    ret = rknn_inputs_set(app_ctx->rknn_ctx, 1, &input);
-    stage_end = Clock::now();
-    perf->input_set_ms = elapsed_ms(stage_start, stage_end);
-    if (ret != RKNN_SUCC) {
-        std::printf("rknn_inputs_set failed: ret=%d\n", ret);
-        return ret;
+int inference_ppocr_rec_model_prepared_bgr(ppocr_rec_context_t* app_ctx,
+                                           const uint8_t* prepared_bgr,
+                                           size_t prepared_size,
+                                           ppocr_rec_result_t* result,
+                                           ppocr_rec_perf_t* perf)
+{
+    if (app_ctx == NULL || app_ctx->rknn_ctx == 0 || prepared_bgr == NULL ||
+        result == NULL || perf == NULL) {
+        return -1;
+    }
+    const size_t expected_size = static_cast<size_t>(app_ctx->model_width) *
+                                 app_ctx->model_height *
+                                 app_ctx->model_channel;
+    if (prepared_size != expected_size) {
+        std::printf("prepared PP-OCR BGR size mismatch: expected=%zu, actual=%zu\n",
+                    expected_size,
+                    prepared_size);
+        return -1;
     }
 
-    stage_start = Clock::now();
-    ret = rknn_run(app_ctx->rknn_ctx, NULL);
-    stage_end = Clock::now();
-    perf->rknn_run_wall_ms = elapsed_ms(stage_start, stage_end);
-    if (ret != RKNN_SUCC) {
-        std::printf("rknn_run failed: ret=%d\n", ret);
-        return ret;
-    }
-
-    rknn_output output;
-    std::memset(&output, 0, sizeof(output));
-    output.want_float = 1;
-    stage_start = Clock::now();
-    ret = rknn_outputs_get(app_ctx->rknn_ctx, 1, &output, NULL);
-    stage_end = Clock::now();
-    perf->output_get_ms = elapsed_ms(stage_start, stage_end);
-    if (ret != RKNN_SUCC || output.buf == NULL) {
-        std::printf("rknn_outputs_get failed: ret=%d\n", ret);
-        return ret == RKNN_SUCC ? -1 : ret;
-    }
-
-    rknn_perf_run official_perf;
-    std::memset(&official_perf, 0, sizeof(official_perf));
-    const Clock::time_point perf_query_start = Clock::now();
-    ret = rknn_query(app_ctx->rknn_ctx,
-                     RKNN_QUERY_PERF_RUN,
-                     &official_perf,
-                     sizeof(official_perf));
-    const double perf_query_ms = elapsed_ms(perf_query_start, Clock::now());
-    if (ret != RKNN_SUCC || official_perf.run_duration <= 0) {
-        std::printf("RKNN_QUERY_PERF_RUN failed: ret=%d, duration=%lld us\n",
-                    ret,
-                    static_cast<long long>(official_perf.run_duration));
-        rknn_outputs_release(app_ctx->rknn_ctx, 1, &output);
-        return ret == RKNN_SUCC ? -1 : ret;
-    }
-    perf->rknn_official_ms = official_perf.run_duration / 1000.0;
-
-    stage_start = Clock::now();
-    ret = ctc_decode(static_cast<const float*>(output.buf), app_ctx, result);
-    stage_end = Clock::now();
-    perf->postprocess_ms = elapsed_ms(stage_start, stage_end);
-
-    const int release_ret =
-        rknn_outputs_release(app_ctx->rknn_ctx, 1, &output);
-    if (release_ret != RKNN_SUCC) {
-        std::printf("rknn_outputs_release failed: ret=%d\n", release_ret);
-        if (ret == 0) {
-            ret = release_ret;
-        }
-    }
-    perf->total_ms = elapsed_ms(total_start, Clock::now()) - perf_query_ms;
-    return ret;
+    std::memset(perf, 0, sizeof(*perf));
+    const Clock::time_point total_start = Clock::now();
+    const Clock::time_point copy_start = Clock::now();
+    app_ctx->input_buffer.assign(prepared_bgr, prepared_bgr + prepared_size);
+    perf->preprocess_ms = elapsed_ms(copy_start, Clock::now());
+    return run_prepared_input(app_ctx, result, perf, total_start);
 }

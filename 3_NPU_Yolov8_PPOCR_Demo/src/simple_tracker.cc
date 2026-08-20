@@ -303,6 +303,29 @@ void UpdateLatestPlateObservation(TrackedPlate* track,
     track->latest_plate_hits = 1;
 }
 
+float PipelineResultIou(const PipelineResult& first,
+                        const PipelineResult& second) {
+    const int intersection_left = std::max(first.left, second.left);
+    const int intersection_top = std::max(first.top, second.top);
+    const int intersection_right = std::min(first.right, second.right);
+    const int intersection_bottom = std::min(first.bottom, second.bottom);
+    if (intersection_right <= intersection_left ||
+        intersection_bottom <= intersection_top) {
+        return 0.0f;
+    }
+    const float intersection = static_cast<float>(
+        (intersection_right - intersection_left) *
+        (intersection_bottom - intersection_top));
+    const float first_area = static_cast<float>(
+        std::max(0, first.right - first.left) *
+        std::max(0, first.bottom - first.top));
+    const float second_area = static_cast<float>(
+        std::max(0, second.right - second.left) *
+        std::max(0, second.bottom - second.top));
+    const float union_area = first_area + second_area - intersection;
+    return union_area > 0.0f ? intersection / union_area : 0.0f;
+}
+
 }  // namespace
 
 SimplePlateTracker::SimplePlateTracker() = default;
@@ -328,6 +351,42 @@ std::string SimplePlateTracker::get_best_voted_plate(const std::map<std::string,
         }
     }
     return best_plate;
+}
+
+std::vector<PipelineResult> SimplePlateTracker::deduplicate_static_detections(
+    const std::vector<PipelineResult>& detections) const {
+    std::vector<PipelineResult> unique;
+    unique.reserve(detections.size());
+    for (const PipelineResult& detection : detections) {
+        size_t duplicate_index = unique.size();
+        for (size_t index = 0; index < unique.size(); ++index) {
+            if (PipelineResultIou(detection, unique[index]) >=
+                static_duplicate_iou_) {
+                duplicate_index = index;
+                break;
+            }
+        }
+        if (duplicate_index == unique.size()) {
+            unique.push_back(detection);
+            continue;
+        }
+
+        const PipelineResult& current = unique[duplicate_index];
+        const bool detection_valid =
+            is_valid_plate(detection.plate_name, detection.plate_type);
+        const bool current_valid =
+            is_valid_plate(current.plate_name, current.plate_type);
+        const bool prefer_detection =
+            (detection_valid != current_valid)
+                ? detection_valid
+                : (detection.text_confidence != current.text_confidence
+                       ? detection.text_confidence > current.text_confidence
+                       : detection.confidence > current.confidence);
+        if (prefer_detection) {
+            unique[duplicate_index] = detection;
+        }
+    }
+    return unique;
 }
 
 // 基于 DIoU (Distance-IoU) 的相似度计算
@@ -433,7 +492,8 @@ void SimplePlateTracker::advance_motion_state(
 void SimplePlateTracker::update_motion_from_observation(
     TrackedPlate* track,
     const PipelineResult& det,
-    int frame_id) const {
+    int frame_id,
+    bool static_image_mode) const {
     if (track == nullptr) {
         return;
     }
@@ -442,6 +502,37 @@ void SimplePlateTracker::update_motion_from_observation(
     const float det_h = static_cast<float>(det.bottom - det.top);
     const float det_cx = static_cast<float>(det.left) + det_w / 2.0f;
     const float det_cy = static_cast<float>(det.top) + det_h / 2.0f;
+
+    if (static_image_mode) {
+        const auto stabilize = [this](float current, float observed) {
+            const float residual = observed - current;
+            return std::fabs(residual) <= static_position_deadband_px_
+                       ? current
+                       : current + static_position_gain_ * residual;
+        };
+        track->cx = stabilize(track->cx, det_cx);
+        track->cy = stabilize(track->cy, det_cy);
+        track->w = std::max(1.0f, stabilize(track->w, det_w));
+        track->h = std::max(1.0f, stabilize(track->h, det_h));
+        track->vx = 0.0f;
+        track->vy = 0.0f;
+        track->vw = 0.0f;
+        track->vh = 0.0f;
+        track->ax = 0.0f;
+        track->ay = 0.0f;
+        track->aw = 0.0f;
+        track->ah = 0.0f;
+        track->observed_vx = 0.0f;
+        track->observed_vy = 0.0f;
+        track->observed_vw = 0.0f;
+        track->observed_vh = 0.0f;
+        track->last_observation_frame_id = frame_id;
+        track->observed_cx = det_cx;
+        track->observed_cy = det_cy;
+        track->observed_w = det_w;
+        track->observed_h = det_h;
+        return;
+    }
 
     const float res_cx = det_cx - track->cx;
     const float res_cy = det_cy - track->cy;
@@ -515,31 +606,45 @@ void SimplePlateTracker::update_motion_from_observation(
     track->observed_h = det_h;
 }
 
-void SimplePlateTracker::update(const std::vector<PipelineResult>& detections, int frame_id) {
-    int dt = (last_frame_id_ < 0) ? 1 : (frame_id - last_frame_id_);
+void SimplePlateTracker::update(const std::vector<PipelineResult>& detections,
+                                int frame_id,
+                                bool static_image_mode) {
+    const std::vector<PipelineResult> unique_detections =
+        static_image_mode
+            ? deduplicate_static_detections(detections)
+            : std::vector<PipelineResult>();
+    const std::vector<PipelineResult>& active_detections =
+        static_image_mode ? unique_detections : detections;
+    int dt = static_image_mode
+                 ? 1
+                 : ((last_frame_id_ < 0) ? 1 : (frame_id - last_frame_id_));
     if (dt < 1) dt = 1;
     last_frame_id_ = frame_id;
 
     // 1. 使用速度和受限加速度把状态推进到当前结果帧。
     for (auto& track : tracks_) {
-        advance_motion_state(&track, dt);
+        if (!static_image_mode) {
+            advance_motion_state(&track, dt);
+        }
         track.time_since_update += dt;
     }
 
     // 2. 构建相似度矩阵并进行贪心二分图匹配
     struct Match { int trk_idx; int det_idx; float score; };
     std::vector<Match> matches;
-    matches.reserve(tracks_.size() * detections.size());
+    matches.reserve(tracks_.size() * active_detections.size());
 
     for (size_t t = 0; t < tracks_.size(); ++t) {
-        if (tracks_[t].time_since_update > max_age_frames_) {
+        if (!static_image_mode &&
+            tracks_[t].time_since_update > max_age_frames_) {
             continue;
         }
-        for (size_t d = 0; d < detections.size(); ++d) {
-            float score = compute_similarity(tracks_[t], detections[d]);
+        for (size_t d = 0; d < active_detections.size(); ++d) {
+            float score =
+                compute_similarity(tracks_[t], active_detections[d]);
             if (score > match_threshold_ ||
                 is_fast_motion_initial_match(
-                    tracks_[t], detections[d], score)) {
+                    tracks_[t], active_detections[d], score)) {
                 matches.push_back({static_cast<int>(t), static_cast<int>(d), score});
             }
         }
@@ -550,7 +655,7 @@ void SimplePlateTracker::update(const std::vector<PipelineResult>& detections, i
         return a.score > b.score;
     });
 
-    std::vector<bool> det_matched(detections.size(), false);
+    std::vector<bool> det_matched(active_detections.size(), false);
     std::vector<bool> track_matched(tracks_.size(), false);
 
     // 3. 执行匹配，并用真实观测间隔更新速度与加速度。
@@ -560,9 +665,10 @@ void SimplePlateTracker::update(const std::vector<PipelineResult>& detections, i
             track_matched[m.trk_idx] = true;
 
             TrackedPlate& tk = tracks_[m.trk_idx];
-            const auto& det = detections[m.det_idx];
+            const auto& det = active_detections[m.det_idx];
 
-            update_motion_from_observation(&tk, det, frame_id);
+            update_motion_from_observation(
+                &tk, det, frame_id, static_image_mode);
 
             // 更新属性与投票
             tk.time_since_update = 0;
@@ -582,9 +688,9 @@ void SimplePlateTracker::update(const std::vector<PipelineResult>& detections, i
     }
 
     // 4. 为未匹配的检测创建新轨迹
-    for (size_t d = 0; d < detections.size(); ++d) {
+    for (size_t d = 0; d < active_detections.size(); ++d) {
         if (!det_matched[d]) {
-            const auto& det = detections[d];
+            const auto& det = active_detections[d];
             TrackedPlate new_tk;
             new_tk.id = next_id_++;
             new_tk.time_since_update = 0;
@@ -616,15 +722,21 @@ void SimplePlateTracker::update(const std::vector<PipelineResult>& detections, i
     }
 
     // 5. 淘汰过期轨迹
-    tracks_.erase(std::remove_if(tracks_.begin(), tracks_.end(),
-        [this](const TrackedPlate& tk) { return tk.time_since_update > max_age_frames_; }),
-        tracks_.end());
+    if (!static_image_mode) {
+        tracks_.erase(std::remove_if(tracks_.begin(), tracks_.end(),
+            [this](const TrackedPlate& tk) { return tk.time_since_update > max_age_frames_; }),
+            tracks_.end());
+    }
 }
 
-void SimplePlateTracker::predict(int frame_id, std::vector<PipelineResult>& out_results) const {
+void SimplePlateTracker::predict(int frame_id,
+                                 std::vector<PipelineResult>& out_results,
+                                 bool static_image_mode) const {
     out_results.clear();
     
-    int dt = (last_frame_id_ < 0) ? 0 : (frame_id - last_frame_id_);
+    int dt = static_image_mode
+                 ? 0
+                 : ((last_frame_id_ < 0) ? 0 : (frame_id - last_frame_id_));
     if (dt < 0) {
         dt = 0;
     }
@@ -632,11 +744,13 @@ void SimplePlateTracker::predict(int frame_id, std::vector<PipelineResult>& out_
     for (const auto& track : tracks_) {
         const int prediction_age = track.time_since_update + dt;
         // 已确认轨迹允许跨越短检测空窗；显示帧过旧时仍会及时隐藏。
-        if (prediction_age <= max_age_frames_ &&
+        if ((static_image_mode || prediction_age <= max_age_frames_) &&
             track.hit_streak >= min_hits_) {
             PipelineResult res;
             TrackedPlate predicted = track;
-            advance_motion_state(&predicted, dt);
+            if (!static_image_mode) {
+                advance_motion_state(&predicted, dt);
+            }
             const float pred_cx = predicted.cx;
             const float pred_cy = predicted.cy;
             const float pred_w = predicted.w;

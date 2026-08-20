@@ -199,6 +199,7 @@ make install
 
 # Check the LPR reference, PP-OCR PCIe pipeline, and PP-OCR evaluator artifacts.
 PPOCR_MODEL_NAME="ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn"
+OBB_MODEL_NAME="yolov8_obb.rknn"
 if [ -d "$INSTALL_DIR" ]; then
     if [ ! -x "$INSTALL_DIR/yolov8_lpr_pcie_demo/yolov8_lpr_pcie_demo" ]; then
         echo -e "\e[91mThe LPR reference PCIe executable is missing.\e[0m"
@@ -212,6 +213,9 @@ if [ -d "$INSTALL_DIR" ]; then
     fi
     if [ ! -f "$INSTALL_DIR/yolov8_ppocr_pcie_demo/model/$PPOCR_MODEL_NAME" ]; then
         echo -e "\e[91mThe selected PP-OCR H2 model is missing from the PCIe install directory.\e[0m"
+    fi
+    if [ ! -f "$INSTALL_DIR/yolov8_ppocr_pcie_demo/model/$OBB_MODEL_NAME" ]; then
+        echo -e "\e[91mThe image-mode YOLOv8 OBB model is missing from the PCIe install directory.\e[0m"
     fi
     if [ ! -f "$INSTALL_DIR/yolov8_ppocr_pcie_demo/model/cblprd_plate_dict.txt" ]; then
         echo -e "\e[91mThe PP-OCR character dictionary is missing from the PCIe install directory.\e[0m"

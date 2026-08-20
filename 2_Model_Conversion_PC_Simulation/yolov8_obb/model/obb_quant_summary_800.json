@@ -1,0 +1,94 @@
+{
+  "status": "VALID",
+  "seed": 20260818,
+  "per_class": 200,
+  "total_unique_images": 800,
+  "storage_mode": "hardlinks_to_existing_train_images_no_pixel_copy",
+  "hardlink_count": 800,
+  "hardlink_directory": "obb_quant_dataset_800",
+  "primary_class_counts": {
+    "blue": 200,
+    "green": 200,
+    "yellow_single": 200,
+    "other": 200
+  },
+  "image_class_coverage": {
+    "blue": 337,
+    "green": 200,
+    "yellow_single": 202,
+    "other": 200
+  },
+  "primary_angle_bins": {
+    "blue": {
+      "0-5": 59,
+      "15-30": 50,
+      "30-90": 25,
+      "5-15": 66
+    },
+    "green": {
+      "0-5": 178,
+      "5-15": 22
+    },
+    "yellow_single": {
+      "0-5": 131,
+      "5-15": 69
+    },
+    "other": {
+      "0-5": 175,
+      "5-15": 25
+    }
+  },
+  "primary_size_quartiles": {
+    "blue": {
+      "0": 17,
+      "1": 58,
+      "2": 64,
+      "3": 61
+    },
+    "green": {
+      "0": 66,
+      "1": 45,
+      "2": 45,
+      "3": 44
+    },
+    "yellow_single": {
+      "0": 62,
+      "1": 47,
+      "2": 49,
+      "3": 42
+    },
+    "other": {
+      "0": 45,
+      "1": 31,
+      "2": 60,
+      "3": 64
+    }
+  },
+  "source_kinds": {
+    "ccpd2019": 163,
+    "ccpd2020": 200,
+    "crpd": 351,
+    "special": 86
+  },
+  "source_partitions": {
+    "ccpd2019/ccpd_base": 27,
+    "ccpd2019/ccpd_blur": 26,
+    "ccpd2019/ccpd_challenge": 22,
+    "ccpd2019/ccpd_db": 20,
+    "ccpd2019/ccpd_fn": 21,
+    "ccpd2019/ccpd_rotate": 17,
+    "ccpd2019/ccpd_tilt": 15,
+    "ccpd2019/ccpd_weather": 15,
+    "ccpd2020/ccpd_green": 200,
+    "crpd/CRPD_double": 122,
+    "crpd/CRPD_multi": 48,
+    "crpd/CRPD_single": 181,
+    "special/教练车牌": 16,
+    "special/澳门出入境车牌": 27,
+    "special/警用车牌": 19,
+    "special/香港出入境车牌": 24
+  },
+  "multi_plate_images": 162,
+  "list_file": "obb_quant_dataset_800.txt",
+  "manifest_file": "obb_quant_manifest_800.tsv"
+}

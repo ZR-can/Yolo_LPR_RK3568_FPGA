@@ -252,6 +252,14 @@ image_buffer_t MakeBgr565Image(PcieFrame* frame) {
     return image;
 }
 
+void ReleaseSelectedPipeline(PcieAppContext* context) {
+    if (context->image_mode) {
+        release_obb_ppocr_pipeline(&context->pipeline);
+    } else {
+        release_ppocr_pipeline(&context->pipeline);
+    }
+}
+
 std::vector<PipelineResult> BuildDisplayResults(PcieAppContext* context,
                                                 int display_frame_id,
                                                 uint64_t display_image_generation,
@@ -291,13 +299,15 @@ std::vector<PipelineResult> BuildDisplayResults(PcieAppContext* context,
                     context->performance.tracker_max_result_lag_frames,
                     result_lag_frames);
         }
-        context->tracker.update(current_results, result_frame_id);
+        context->tracker.update(
+            current_results, result_frame_id, context->image_mode);
         context->last_result_frame_id = result_frame_id;
         context->performance.plate_results.fetch_add(current_results.size());
     }
 
     std::vector<PipelineResult> tracked_results;
-    context->tracker.predict(display_frame_id, tracked_results);
+    context->tracker.predict(
+        display_frame_id, tracked_results, context->image_mode);
 
     const float scale_x = (float)display_width / PcieFrameSource::kFrameWidth;
     const float scale_y = (float)display_height / PcieFrameSource::kFrameHeight;
@@ -364,8 +374,11 @@ void InferenceThread(PcieAppContext* context) {
         image_buffer_t image = MakeBgr565Image(frame.get());
         std::vector<PipelineResult> results;
         const std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-        const int ret =
-            process_ppocr_pipeline(&context->pipeline, &image, results);
+        const int ret = context->image_mode
+                            ? process_obb_ppocr_pipeline(
+                                  &context->pipeline, &image, results)
+                            : process_ppocr_pipeline(
+                                  &context->pipeline, &image, results);
         context->performance.inference_ms += ElapsedMilliseconds(begin);
         if (ret == 0) {
             std::lock_guard<std::mutex> lock(context->latest_result.mutex);
@@ -621,7 +634,7 @@ void PrintPerformance(const PcieAppContext& context, const PcieFrameSource& sour
 
 }  // namespace
 
-static int RunPpocrPcieDemoInternal(const char* yolov8_model,
+static int RunPpocrPcieDemoInternal(const char* detector_model,
                                     const char* ppocr_model,
                                     const char* dictionary,
                                     const PcieUiCallbacks* callbacks,
@@ -631,7 +644,8 @@ static int RunPpocrPcieDemoInternal(const char* yolov8_model,
     printf("    YOLOv8 PP-OCR PCIe BGR565 Demo      \n");
     printf("========================================\n\n");
 
-    if (yolov8_model == nullptr || ppocr_model == nullptr || dictionary == nullptr) {
+    if (detector_model == nullptr || ppocr_model == nullptr ||
+        dictionary == nullptr) {
         fprintf(stderr, "Model path is missing\n");
         return -1;
     }
@@ -649,8 +663,17 @@ static int RunPpocrPcieDemoInternal(const char* yolov8_model,
     printf("Plate result mode: %s\n",
            image_mode ? "static-image generation + tracker vote"
                       : "video tracker vote");
-    int ret = init_ppocr_pipeline(
-        yolov8_model, ppocr_model, dictionary, &context.pipeline);
+    int ret = image_mode
+                  ? init_obb_ppocr_pipeline(
+                        detector_model,
+                        ppocr_model,
+                        dictionary,
+                        &context.pipeline)
+                  : init_ppocr_pipeline(
+                        detector_model,
+                        ppocr_model,
+                        dictionary,
+                        &context.pipeline);
     if (ret != 0) {
         fprintf(stderr, "Pipeline initialization failed: %d\n", ret);
         return ret;
@@ -664,7 +687,7 @@ static int RunPpocrPcieDemoInternal(const char* yolov8_model,
                                           context.drm_display.ui_height) != 0) {
             fprintf(stderr, "PCIe display initialization failed\n");
             drm_display_deinit(&context.drm_display);
-            release_ppocr_pipeline(&context.pipeline);
+            ReleaseSelectedPipeline(&context);
             return -1;
         }
         context.drm_initialized = true;
@@ -672,7 +695,7 @@ static int RunPpocrPcieDemoInternal(const char* yolov8_model,
         if (context.overlay_renderer.Init(PcieFrameSource::kFrameWidth,
                                           PcieFrameSource::kFrameHeight) != 0) {
             fprintf(stderr, "Qt display overlay initialization failed\n");
-            release_ppocr_pipeline(&context.pipeline);
+            ReleaseSelectedPipeline(&context);
             return -1;
         }
     }
@@ -683,7 +706,7 @@ static int RunPpocrPcieDemoInternal(const char* yolov8_model,
             drm_display_deinit(&context.drm_display);
             context.drm_initialized = false;
         }
-        release_ppocr_pipeline(&context.pipeline);
+        ReleaseSelectedPipeline(&context);
         return -1;
     }
 
@@ -697,7 +720,7 @@ static int RunPpocrPcieDemoInternal(const char* yolov8_model,
                 drm_display_deinit(&context.drm_display);
                 context.drm_initialized = false;
             }
-            release_ppocr_pipeline(&context.pipeline);
+            ReleaseSelectedPipeline(&context);
             return -1;
         }
     }
@@ -843,7 +866,7 @@ static int RunPpocrPcieDemoInternal(const char* yolov8_model,
     }
 
     PrintPerformance(context, source, start_ms);
-    release_ppocr_pipeline(&context.pipeline);
+    ReleaseSelectedPipeline(&context);
     return capture_result;
 }
 
@@ -855,12 +878,12 @@ int RunPpocrPcieDemo(const char* yolov8_model,
         yolov8_model, ppocr_model, dictionary, callbacks, false);
 }
 
-int RunPpocrPcieImageDemo(const char* yolov8_model,
+int RunPpocrPcieImageDemo(const char* yolov8_obb_model,
                           const char* ppocr_model,
                           const char* dictionary,
                           const PcieUiCallbacks* callbacks) {
     return RunPpocrPcieDemoInternal(
-        yolov8_model, ppocr_model, dictionary, callbacks, true);
+        yolov8_obb_model, ppocr_model, dictionary, callbacks, true);
 }
 
 #ifndef PCIE_QT_UI_BUILD

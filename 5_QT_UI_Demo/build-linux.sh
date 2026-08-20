@@ -80,6 +80,7 @@ for FPGA_CONTROL_FILE in \
     fi
 done
 YOLO_MODEL="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/yolov8.rknn"
+YOLO_OBB_MODEL="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/yolov8_obb.rknn"
 VIDEO_PPOCR_MODEL="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn"
 PPOCR_DICTIONARY="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/cblprd_plate_dict.txt"
 PLATE_LABELS="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/labels_list.txt"
@@ -89,6 +90,7 @@ TRAFFIC_ROI_CONFIG="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/traffic/traffic
 IMAGE_PPOCR_MODEL="${INSTALL_DIR}/yolov8_ppocr_pcie_qt_ui/model/ppocrv4_rec14_fold_affine_1x1_rk3568_fp16.rknn"
 for REQUIRED_MODE_FILE in \
     "${YOLO_MODEL}" \
+    "${YOLO_OBB_MODEL}" \
     "${VIDEO_PPOCR_MODEL}" \
     "${PPOCR_DICTIONARY}" \
     "${PLATE_LABELS}" \
@@ -105,6 +107,11 @@ done
 DEPLOY_SOURCE_MODEL="${SCRIPT_DIR}/../3_NPU_Yolov8_PPOCR_Demo/model/finetune_i8.rknn"
 if ! cmp -s "${DEPLOY_SOURCE_MODEL}" "${YOLO_MODEL}"; then
     echo "Installed YOLO model differs from: ${DEPLOY_SOURCE_MODEL}"
+    exit 1
+fi
+DEPLOY_SOURCE_OBB_MODEL="${SCRIPT_DIR}/../2_Model_Conversion_PC_Simulation/yolov8_obb/model/yolov8_obb_i8.rknn"
+if ! cmp -s "${DEPLOY_SOURCE_OBB_MODEL}" "${YOLO_OBB_MODEL}"; then
+    echo "Installed image-mode OBB model differs from: ${DEPLOY_SOURCE_OBB_MODEL}"
     exit 1
 fi
 

@@ -47,6 +47,7 @@ set(PPOCR_BACKEND_SRCS
     "${PPOCR_DEMO_ROOT}/src/ppocr_rec.cc"
     "${PPOCR_DEMO_ROOT}/src/ppocr_retry_policy.cc"
     "${PPOCR_DEMO_ROOT}/src/static_image_change_detector.cc"
+    "${PPOCR_DEMO_ROOT}/src/obb_postprocess.cc"
     "${PPOCR_DEMO_ROOT}/src/yolo_ppocr_pipeline.cc"
     "${PPOCR_DEMO_ROOT}/src/simple_tracker.cc"
     "${PPOCR_DEMO_ROOT}/src/plate_rule.cc"
@@ -134,6 +135,8 @@ target_include_directories(fpga_bar0_ctrl_test PRIVATE
 set(PCIE_DRIVER_MODULE "${PPOCR_DEMO_ROOT}/pango_pci_driver.ko")
 set(YOLO_DEPLOY_MODEL_FILE
     "${PPOCR_DEMO_ROOT}/model/finetune_i8.rknn")
+set(YOLO_OBB_MODEL_FILE
+    "${PPOCR_DEMO_ROOT}/../2_Model_Conversion_PC_Simulation/yolov8_obb/model/yolov8_obb_i8.rknn")
 set(LABEL_FILE "${PPOCR_DEMO_ROOT}/model/labels_list.txt")
 set(PPOCR_MODEL_FILE
     "${PPOCR_DEMO_ROOT}/model/ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn")
@@ -150,6 +153,7 @@ set(QT_LAUNCH_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/run-qt-demo.sh")
 foreach(REQUIRED_FILE
         "${PCIE_DRIVER_MODULE}"
         "${YOLO_DEPLOY_MODEL_FILE}"
+        "${YOLO_OBB_MODEL_FILE}"
         "${LABEL_FILE}"
         "${PPOCR_MODEL_FILE}"
         "${PPOCR_IMAGE_MODEL_FILE}"
@@ -172,6 +176,9 @@ install(PROGRAMS "${FPGA_CTRL_SCRIPT}" DESTINATION ${TARGET_NAME})
 install(FILES "${YOLO_DEPLOY_MODEL_FILE}"
         DESTINATION ${TARGET_NAME}/model
         RENAME yolov8.rknn)
+install(FILES "${YOLO_OBB_MODEL_FILE}"
+        DESTINATION ${TARGET_NAME}/model
+        RENAME yolov8_obb.rknn)
 install(FILES
     "${LABEL_FILE}"
     "${PPOCR_MODEL_FILE}"

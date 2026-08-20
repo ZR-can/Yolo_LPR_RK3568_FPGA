@@ -117,8 +117,12 @@ class SimplePlateTracker {
 public:
     SimplePlateTracker();
     void reset();
-    void update(const std::vector<PipelineResult>& detections, int frame_id);
-    void predict(int frame_id, std::vector<PipelineResult>& out_results) const;
+    void update(const std::vector<PipelineResult>& detections,
+                int frame_id,
+                bool static_image_mode = false);
+    void predict(int frame_id,
+                 std::vector<PipelineResult>& out_results,
+                 bool static_image_mode = false) const;
 
 private:
     bool is_valid_plate(const std::string& plate, const std::string& plate_type) const;
@@ -132,8 +136,11 @@ private:
     void advance_motion_state(TrackedPlate* track, int dt) const;
     void update_motion_from_observation(TrackedPlate* track,
                                         const PipelineResult& det,
-                                        int frame_id) const;
+                                        int frame_id,
+                                        bool static_image_mode) const;
     void clamp_acceleration(TrackedPlate* track) const;
+    std::vector<PipelineResult> deduplicate_static_detections(
+        const std::vector<PipelineResult>& detections) const;
 
     std::vector<TrackedPlate> tracks_;
     int next_id_ = 0;
@@ -144,6 +151,9 @@ private:
     float velocity_gain_ = 0.80f;
     float acceleration_gain_ = 0.35f;
     float acceleration_limit_ratio_ = 0.12f;
+    float static_position_gain_ = 0.15f;
+    float static_position_deadband_px_ = 2.0f;
+    float static_duplicate_iou_ = 0.65f;
     
     int max_age_frames_ = 8;    // 允许短检测空窗继续预测，约 4 个推理周期
     int min_hits_ = 2;          // 确认为有效目标所需的最少连续命中次数

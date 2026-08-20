@@ -5,8 +5,8 @@
 本目录承载 RK3568 + FPGA PCIe 智能交通 Qt 5 界面，提供三种可选模式：
 
 - `视频识别`：当前生产链路，使用 YOLOv8 + PP-OCRv4 识别车牌。
-- `图片识别`：读取 FPGA/PCIe 输入的静态画面，使用 FP16 PP-OCR；每次换图先隔离上一图片
-  generation，再复用视频 Tracker 的连续 2 次确认与合法投票。
+- `图片识别`：读取 FPGA/PCIe 输入的静态画面，使用 YOLOv8-OBB 定位并旋转矫正车牌，再送入
+  FP16 PP-OCR；每次换图先隔离上一图片 generation，再复用 Tracker 的连续 2 次确认与合法投票。
 - `行人违法检测`：接入项目 4 的 person 检测、固定交通灯 ROI 取色、灯色投票、斑马线 ROI 和
   闯红灯事件去重链路。
 
@@ -19,24 +19,29 @@ Tracker 和 RGA 叠加代码，同时复用第 4 阶段的交通后处理、时�
 跟踪，不改变行人违法检测 Tracker。
 当前仍需在 Ubuntu 20.04 交叉编译，并在 RK3568 + FPGA 实链路复测。
 
-## 唯一部署 YOLO 模型
+## 视频/图片检测模型分流
 
-板端测试已确认微调模型可直接使用，因此项目 5 只生成一个
+板端测试已确认微调模型可直接用于视频模式，因此项目 5 只生成一个
 `yolov8_ppocr_pcie_qt_ui/` 安装包和一个 `run-qt-demo.sh` 启动入口。部署模型来自
 `../2_Model_Conversion_PC_Simulation/yolov8/model/finetune_i8.rknn`
 复制到 `../3_NPU_Yolov8_PPOCR_Demo/model/finetune_i8.rknn`，文件大小为
 `4,634,120` 字节，SHA-256 均为
 `E11C5A8E69C34EC2FC3DA45C81A070EECC88D177EE75374830D861DCF19CA30F`。
-构建时它被重命名为唯一安装包内的 `model/yolov8.rknn`；`build-linux.sh` 会逐字节检查
-安装结果与源微调模型一致，并删除旧构建可能残留的第二套微调包目录。
+构建时它被重命名为安装包内的 `model/yolov8.rknn`，只供 `RunPpocrPcieDemo()` 视频入口
+使用，保持普通轴对齐后处理与 `conf=0.55` 不变。
 
-两个模式入口都从可执行文件所在目录加载同一个
-`model/yolov8.rknn`：`RunPpocrPcieDemo()` 用于视频模式，
-`RunPpocrPcieImageDemo()` 用于图片模式。因此图片和视频模式都会使用微调 RKNN，不存在
-默认/微调版本切换。项目 3 原 `model/yolov8.rknn` 仍保留给其独立命令行 Demo，项目 5 不再引用。
+图片入口 `RunPpocrPcieImageDemo()` 独立加载 `model/yolov8_obb.rknn`，源文件为
+`../2_Model_Conversion_PC_Simulation/yolov8_obb/model/yolov8_obb_i8.rknn`，文件大小
+`4,361,505` 字节，SHA-256 为
+`669737431961C93DD12E27CDECABB1EB680966E4F9EB6E9A2DE28E4C5E532950`。图片路径使用
+四路 INT8 native output、DFL/角度解码以及最终部署参数 `conf=0.55`、同类别旋转
+NMS `0.55`。蓝/绿框高度重叠且分差不超过 `0.10` 时，先从矫正 BGR 车牌区域统计颜色；
+证据不足时两个冲突候选均丢弃，不进入 OCR 后结构裁决。四角点旋转矫正为 PP-OCR 的连续 BGR
+`48×160×3` 输入。`build-linux.sh` 会逐字节校验两个检测模型，并删除旧
+构建可能残留的第二套微调包目录。
 
 微调训练的 F1-confidence 曲线峰值分别约为 val `0.676`、固定 test `0.602`；
-唯一 Qt 版本保持已经用于 PT/ONNX 一致性检查的 `conf=0.55`，
+视频模式保持已经用于 PT/ONNX 一致性检查的 `conf=0.55`，
 不引入阈值差异。曲线峰值只作为后续板端 A/B 调参依据。
 
 ## 开发记录
@@ -52,7 +57,7 @@ FPGA PCIe BGR565 1280×720 -> PcieFrameSource
     │    -> YOLOv8 车牌检测 -> PP-OCRv4
     │    -> GA 36 规则、投票与车牌 Tracker
     ├─ 图片识别
-    │    -> YOLOv8 车牌检测 -> FP16 PP-OCRv4
+    │    -> YOLOv8-OBB -> 旋转 NMS -> 车牌旋转矫正 -> FP16 PP-OCRv4
     │    -> 静态图片 generation -> GA 36 规则、连续 2 次确认与投票
     └─ 行人违法检测
          -> YOLOv8 person + 固定交通灯 ROI 直接取色
@@ -95,8 +100,9 @@ Qt 队列最多保留 2 个待绘制事件；界面落后时主动丢弃旧帧�
 ```text
 ../3_NPU_Yolov8_PPOCR_Demo/
 ├── src/main_ppocr.cc
+├── src/obb_postprocess.cc
 ├── src/yolo_ppocr_pipeline.cc
-├── model/yolov8.rknn
+├── model/finetune_i8.rknn
 ├── model/ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn
 ├── model/ppocrv4_rec14_fold_affine_1x1_rk3568_fp16.rknn
 ├── model/cblprd_plate_dict.txt
@@ -109,6 +115,9 @@ Qt 队列最多保留 2 个待绘制事件；界面落后时主动丢弃旧帧�
 ├── src/traffic_overlay_renderer.cc
 ├── model/yolov8_traffic_i8.rknn
 └── model/labels_list.txt
+
+../2_Model_Conversion_PC_Simulation/yolov8_obb/model/
+└── yolov8_obb_i8.rknn
 ```
 
 因此编译时必须保持项目 3、项目 4 和项目 5 的相对位置不变。若确需改变位置，可在 CMake
@@ -176,6 +185,7 @@ install/rk356x_linux_aarch64/rknn_yolov8_ppocr_qt_ui_demo/
     │       └── simhei.ttf
     └── model/
         ├── yolov8.rknn
+        ├── yolov8_obb.rknn
         ├── labels_list.txt
         ├── ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn
         ├── ppocrv4_rec14_fold_affine_1x1_rk3568_fp16.rknn
@@ -212,6 +222,7 @@ adb shell ls -lh \
   /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui/yolov8_ppocr_pcie_qt_ui \
   /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui/run-qt-demo.sh \
   /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui/model/yolov8.rknn \
+  /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui/model/yolov8_obb.rknn \
   /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui/model/ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn \
   /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui/model/ppocrv4_rec14_fold_affine_1x1_rk3568_fp16.rknn \
   /userdata/rknn_yolov8_ppocr_qt_ui_demo/yolov8_ppocr_pcie_qt_ui/model/cblprd_plate_dict.txt \
@@ -256,7 +267,7 @@ export XAUTHORITY=/var/run/lightdm/root/:0
 xrandr --current
 ```
 
-程序不再接收模型和字典路径；车牌 YOLOv8、视频 H2 PP-OCR、图片 FP16 PP-OCR、字符字典以及
+程序不再接收模型和字典路径；视频车牌 YOLOv8、图片 YOLOv8-OBB、视频 H2 PP-OCR、图片 FP16 PP-OCR、字符字典以及
 交通 YOLOv8 均固定从可执行文件旁的 `model/` 目录加载。行人模式默认读取
 `model/traffic/traffic_roi.conf`，其中同时保存归一化斑马线多边形和固定主交通灯矩形。
 一键脚本会原样转发 `--roi-config`、`--roi` 和 `--light-roi`；后两项可以分别覆盖配置中的
@@ -325,9 +336,13 @@ kill -TERM $(pidof yolov8_ppocr_pcie_qt_ui)
   “FPGA参数已写入并读回”；ROI 放大仅改变预览，不改变三个模式的后端输入。
 - 视频识别叠加车牌框、类型和识别文本；行人违法检测叠加斑马线 ROI、信号灯、person ID
   和违法状态。
-- 图片识别使用 FP16 PP-OCR；同一静态图片复用视频模式的连续 2 次相同文本确认和合法结果投票，
+- 图片识别使用 OBB 旋转框矫正与 FP16 PP-OCR；同一静态图片复用连续 2 次相同文本确认和合法结果投票，
   过滤单次 OCR 错误。检测到换图时立即清空上一张图片的 Tracker/投票和结果表，不累加跨图片
   分数，也不把上一图片尚未完成的异步推理叠加到新图。
+- 图片 Tracker 不使用视频模式的速度/加速度外推；固定框采用 `2 px` 坐标死区和低增益平滑。
+  同一帧轴对齐 IoU 不低于 `0.65` 的结果只建立一条轨迹。蓝/绿 INT8 等分冲突优先使用矫正
+  图颜色证据；颜色不明确时两个候选都不进入 OCR、结果表或显示层，不再强行选择绿色 8 位
+  或 OCR 分数更高者。因此不确定结果表现为本轮无车牌，而不是双框或错误颜色。
 - 图片模式首次收到静态画面及每次检测到换图时，终端输出
   `Static image generation: N (frame=M)`。同一图片期间 generation 应保持不变；切换到稳定新图
   后只应递增一次。如果同一图片仍连续递增，说明输入画面抖动超过当前块均值抗噪门槛，需要保存
@@ -528,15 +543,18 @@ RKNN/RGA 使用安装目录 `lib/`。Qt 库由板端系统或现有 Qt 5.12.9 AR
 
 ### 模型或字典初始化失败
 
-程序必须接收前 3 个参数，交通模型和图片 PP-OCR 模型参数可选，顺序固定为：
+程序不接收模型位置参数。请直接检查安装目录中的固定资源是否齐全：
 
 ```text
-车牌 YOLOv8 RKNN -> 视频 PP-OCR RKNN -> 73 字符 UTF-8 字典
--> [交通 YOLOv8 RKNN] -> [图片 FP16 PP-OCR RKNN]
+model/yolov8.rknn                 视频车牌检测
+model/yolov8_obb.rknn             图片 OBB 车牌检测
+model/ppocr...h2...rknn           视频 PP-OCR
+model/ppocr...fp16.rknn            图片 PP-OCR
+model/cblprd_plate_dict.txt        73 字符 UTF-8 字典
+model/traffic/yolov8_traffic_i8.rknn
 ```
 
-省略可选参数时使用安装目录中的默认模型。只覆盖图片模型时仍需先传交通模型路径。不要再传
-LPRNet 7 位/8 位模型。
+启动日志若报告 OBB tensor contract mismatch，还需确认图片模型没有被普通 YOLO 文件覆盖。
 
 ### PCIe 无画面
 

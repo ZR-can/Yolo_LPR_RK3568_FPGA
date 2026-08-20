@@ -56,6 +56,7 @@ set(PPOCR_PIPELINE_SRCS
     src/ppocr_rec.cc
     src/ppocr_retry_policy.cc
     src/static_image_change_detector.cc
+    src/obb_postprocess.cc
     src/yolo_ppocr_pipeline.cc
 )
 
@@ -68,6 +69,8 @@ set(YOLO_MODEL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/yolov8.rknn")
 set(LABEL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/labels_list.txt")
 file(GLOB LPR_MODEL_FILES "${CMAKE_CURRENT_SOURCE_DIR}/model/lprnet*.rknn")
 set(PPOCR_MODEL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn")
+set(OBB_MODEL_FILE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../2_Model_Conversion_PC_Simulation/yolov8_obb/model/yolov8_obb_i8.rknn")
 set(PPOCR_DICT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/cblprd_plate_dict.txt")
 set(PPOCR_TEST_FILE "${CMAKE_CURRENT_SOURCE_DIR}/model/test_ppocr.jpg")
 
@@ -76,6 +79,7 @@ foreach(REQUIRED_FILE
         ${YOLO_MODEL_FILE}
         ${LABEL_FILE}
         ${PPOCR_MODEL_FILE}
+        ${OBB_MODEL_FILE}
         ${PPOCR_DICT_FILE})
     if (NOT EXISTS "${REQUIRED_FILE}")
         message(FATAL_ERROR "Required deployment file is missing: ${REQUIRED_FILE}")
@@ -161,6 +165,9 @@ install(FILES
     ${PPOCR_DICT_FILE}
     DESTINATION ${TARGET_PCIE_PPOCR}/model
 )
+install(FILES ${OBB_MODEL_FILE}
+        DESTINATION ${TARGET_PCIE_PPOCR}/model
+        RENAME yolov8_obb.rknn)
 install(FILES ${PCIE_DRIVER_MODULE} DESTINATION ${TARGET_PCIE_PPOCR})
 
 install(TARGETS ${TARGET_PPOCR_EVAL} DESTINATION ${TARGET_PPOCR_EVAL})
@@ -214,4 +221,26 @@ if (BUILD_TESTING)
     )
     add_test(NAME static_image_change_detector_test
              COMMAND static_image_change_detector_test)
+
+    add_executable(obb_postprocess_test
+        validation/obb_postprocess_test.cc
+        src/obb_postprocess.cc
+    )
+    target_include_directories(obb_postprocess_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/utils
+        ${LIBRKNNRT_INCLUDES}
+    )
+    add_test(NAME obb_postprocess_test COMMAND obb_postprocess_test)
+
+    add_executable(simple_tracker_static_image_test
+        validation/simple_tracker_static_image_test.cc
+        src/plate_rule.cc
+        src/simple_tracker.cc
+    )
+    target_include_directories(simple_tracker_static_image_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    add_test(NAME simple_tracker_static_image_test
+             COMMAND simple_tracker_static_image_test)
 endif()

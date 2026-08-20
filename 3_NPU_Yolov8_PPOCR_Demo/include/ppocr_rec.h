@@ -1,6 +1,7 @@
 #ifndef PPOCR_REC_H
 #define PPOCR_REC_H
 
+#include <cstddef>
 #include <stdint.h>
 
 #include <string>
@@ -55,5 +56,13 @@ int inference_ppocr_rec_model_roi(ppocr_rec_context_t* app_ctx,
                                   const image_rect_t* roi,
                                   ppocr_rec_result_t* result,
                                   ppocr_rec_perf_t* perf);
+
+// Runs PP-OCR from an already rectified, resized and right-padded interleaved
+// UINT8 BGR [48,160,3] buffer. This is the image-mode OBB handoff contract.
+int inference_ppocr_rec_model_prepared_bgr(ppocr_rec_context_t* app_ctx,
+                                           const uint8_t* prepared_bgr,
+                                           size_t prepared_size,
+                                           ppocr_rec_result_t* result,
+                                           ppocr_rec_perf_t* perf);
 
 #endif  // PPOCR_REC_H

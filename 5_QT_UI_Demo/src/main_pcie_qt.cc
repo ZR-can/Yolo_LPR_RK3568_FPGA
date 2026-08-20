@@ -212,6 +212,7 @@ class PcieQtWorker : public QThread {
 
 public:
     PcieQtWorker(const QString& yolov8_model,
+                 const QString& yolov8_obb_model,
                  const QString& video_ppocr_model,
                  const QString& image_ppocr_model,
                  const QString& dictionary,
@@ -222,6 +223,7 @@ public:
                  QObject* parent = nullptr)
         : QThread(parent),
           yolov8_model_(yolov8_model),
+          yolov8_obb_model_(yolov8_obb_model),
           video_ppocr_model_(video_ppocr_model),
           image_ppocr_model_(image_ppocr_model),
           dictionary_(dictionary),
@@ -291,7 +293,7 @@ protected:
                                    &callbacks);
         } else if (mode_ == UiMode::kImageRecognition) {
             ret = RunPpocrPcieImageDemo(
-                yolov8_model_.toLocal8Bit().constData(),
+                yolov8_obb_model_.toLocal8Bit().constData(),
                 image_ppocr_model_.toLocal8Bit().constData(),
                 dictionary_.toLocal8Bit().constData(),
                 &callbacks);
@@ -320,6 +322,7 @@ private:
     }
 
     QString yolov8_model_;
+    QString yolov8_obb_model_;
     QString video_ppocr_model_;
     QString image_ppocr_model_;
     QString dictionary_;
@@ -338,6 +341,7 @@ class MainWindow : public QMainWindow {
 
 public:
     MainWindow(const QString& yolov8_model,
+               const QString& yolov8_obb_model,
                const QString& video_ppocr_model,
                const QString& image_ppocr_model,
                const QString& dictionary,
@@ -347,6 +351,7 @@ public:
                QWidget* parent = nullptr)
         : QMainWindow(parent),
           yolov8_model_(yolov8_model),
+          yolov8_obb_model_(yolov8_obb_model),
           video_ppocr_model_(video_ppocr_model),
           image_ppocr_model_(image_ppocr_model),
           dictionary_(dictionary),
@@ -820,11 +825,19 @@ private:
     void StartWorker() {
         operation_message_hold_until_ms_ = 0;
         const UiMode mode = CurrentMode();
-        if (mode == UiMode::kImageRecognition &&
-            !QFileInfo::exists(image_ppocr_model_)) {
-            ShowOperationMessage(
-                pcie_qt_ui::Zh("图片识别模型不存在：%1").arg(image_ppocr_model_));
-            return;
+        if (mode == UiMode::kImageRecognition) {
+            if (!QFileInfo::exists(yolov8_obb_model_)) {
+                ShowOperationMessage(
+                    pcie_qt_ui::Zh("图片OBB模型不存在：%1")
+                        .arg(yolov8_obb_model_));
+                return;
+            }
+            if (!QFileInfo::exists(image_ppocr_model_)) {
+                ShowOperationMessage(
+                    pcie_qt_ui::Zh("图片识别模型不存在：%1")
+                        .arg(image_ppocr_model_));
+                return;
+            }
         }
         if (mode == UiMode::kPedestrianViolation &&
             !QFileInfo::exists(traffic_model_)) {
@@ -848,6 +861,7 @@ private:
         ResetPreview();
 
         worker_ = new PcieQtWorker(yolov8_model_,
+                                   yolov8_obb_model_,
                                    video_ppocr_model_,
                                    image_ppocr_model_,
                                    dictionary_,
@@ -1123,6 +1137,7 @@ private:
 
     Ui::MainWindow ui_;
     QString yolov8_model_;
+    QString yolov8_obb_model_;
     QString video_ppocr_model_;
     QString image_ppocr_model_;
     QString dictionary_;
@@ -1188,6 +1203,8 @@ int main(int argc, char** argv) {
     const QDir application_dir(QApplication::applicationDirPath());
     const QString yolov8_model =
         application_dir.filePath("model/yolov8.rknn");
+    const QString yolov8_obb_model =
+        application_dir.filePath("model/yolov8_obb.rknn");
     const QString video_ppocr_model = application_dir.filePath(
         "model/ppocrv4_rec14_fold_affine_1x1_rk3568_hybrid_mmse_h2_add27_hsw4.rknn");
     const QString image_ppocr_model = application_dir.filePath(
@@ -1202,6 +1219,7 @@ int main(int argc, char** argv) {
         application_dir.filePath("model/traffic/labels_list.txt");
     const QString required_files[] = {
         yolov8_model,
+        yolov8_obb_model,
         video_ppocr_model,
         image_ppocr_model,
         dictionary,
@@ -1219,6 +1237,7 @@ int main(int argc, char** argv) {
     }
 
     MainWindow window(yolov8_model,
+                      yolov8_obb_model,
                       video_ppocr_model,
                       image_ppocr_model,
                       dictionary,

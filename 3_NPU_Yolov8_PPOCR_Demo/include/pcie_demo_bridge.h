@@ -75,7 +75,7 @@ int RunPpocrPcieDemo(const char* yolov8_model,
                      const char* dictionary,
                      const PcieUiCallbacks* callbacks);
 
-int RunPpocrPcieImageDemo(const char* yolov8_model,
+int RunPpocrPcieImageDemo(const char* yolov8_obb_model,
                           const char* ppocr_model,
                           const char* dictionary,
                           const PcieUiCallbacks* callbacks);

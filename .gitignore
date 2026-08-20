@@ -43,6 +43,7 @@ relate
 rknn
 2_Model_Conversion_PC_Simulation/ultralytics_yolov8
 2_Model_Conversion_PC_Simulation/PPOCR/model/quant_images
+2_Model_Conversion_PC_Simulation/yolov8_obb/model/obb_quant_dataset_*/
 3_NPU_Yolov8_PPOCR_Demo/result
 3_NPU_Yolov8_PPOCR_Demo/tests
 yolo_-lprnet_-pytorch-master
@@ -53,3 +54,4 @@ tmp/
 test/
 test.zip
 outputs/
+6_Temporary_OBB_Perf_Demo/
