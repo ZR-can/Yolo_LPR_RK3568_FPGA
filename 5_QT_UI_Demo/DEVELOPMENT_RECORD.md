@@ -1,5 +1,13 @@
 # 5_QT_UI_Demo 开发记录
 
+## 2026-08-20 同步 OBB 综合报告与 Qt 显示边界
+
+- 新增 `../3_NPU_Yolov8_PPOCR_Demo/YOLOV8_OBB_TRAINING_CONVERSION_DEPLOYMENT_REPORT_20260820.md`，集中记录图片
+  模式 OBB 的训练测试、RKNN INT8 量化部署、检测输入到 PP-OCR 输入的全部处理和板端理论
+  吞吐；视频模式继续使用当前微调轴对齐 YOLO，不纳入 OBB 性能口径。
+- 报告确认 Qt 当前接收的是 OBB 四角点外接矩形结果，现有矩形框和文字背景板接口保持不变；
+  内部四角点只用于旋转 NMS、原图回映射和 OCR 矫正，尚未穿过 Tracker/UI 接口绘制多边形。
+
 ## 2026-08-19 删除颜色不明确的 OCR/Tracker 兜底
 
 - 蓝绿高重叠、近分候选的像素颜色证据不足时，当前图片本轮不输出结果；不再让两个候选进入
