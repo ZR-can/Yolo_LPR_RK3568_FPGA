@@ -11,7 +11,6 @@ namespace pcie_qt_ui {
 QString Zh(const char* text);
 void LoadChineseFont(QApplication* app);
 void ApplyTrafficStyle(QWidget* widget);
-QString ModeBadgeText(const QString& mode);
 
 }  // namespace pcie_qt_ui
 

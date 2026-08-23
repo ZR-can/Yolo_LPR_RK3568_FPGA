@@ -1,5 +1,60 @@
 # 3_NPU_Yolov8_PPOCR_Demo 开发记录
 
+## 2026-08-23 无驱动源码条件下的 read 路径确认
+
+- 当前 `pango_pci_driver.ko` 不是本项目自行编译，仓库、全部 Git 历史及本机相关资料均没有
+  匹配的 `pango_pci_driver.c`；模块 DWARF 记录的原始路径为
+  `/userdata/car_plate/pango_driver/pango_pci_driver.c`，当前也没有可访问的板端源码副本。
+- 对未剥离的 AArch64 模块完成符号、重定位和函数反汇编：`pango_cdev_read()` 只有MMIO完成
+  状态读取与一次 `__arch_copy_to_user(buf, dma_buffer, count)`，状态为0时直接返回 `-1`；成功
+  路径没有等待循环。模块为多个缓冲分别执行4 MiB `dma_alloc_attrs(..., GFP_KERNEL, attrs=0)`，
+  现有 `file_operations` 没有 `mmap` 回调。
+- 因缺少源码，本轮不反汇编重造内核模块；Qt工具目录新增只读 ftrace function-graph 脚本，供
+  板端在不替换 `.ko` 的情况下拆分成功 `pango_cdev_read`、`copy_to_user` 和剩余驱动时间。
+
+## 2026-08-23 PCIe 采集时序诊断统计
+
+- 在 PCIe 采集线程增加只写型 `steady_clock` 时序累加器；退出汇总现在分别输出成功
+  `ReadFrame()` 调用的平均/最大耗时、相邻完整帧读取完成时刻的平均/最大间隔。
+- 图片模式额外统计静态变化检测完成到下一次 `ReadFrame()` 开始之间的平均/最大延迟，用于
+  隔离变化检测后的队列提交、循环调度和线程抢占是否挤占下一次读取时机。
+- 三项统计不改变驱动重试、6 槽帧池、显示/推理队列或每 2 帧推理一次的策略；成功读取统计也
+  包含暂停期间为保持 PCIe 消费而读入 drain buffer 的完整帧，`Captured` 原有口径保持不变。
+- 四个相关源码/记录文件已通过定向 `git diff --check` 和统计路径源码核对；当前 Windows 环境
+  没有 C/C++ 编译器，WSL 也未安装发行版，仍需在 Linux/aarch64 构建环境完成交叉编译和板端
+  图片空画面、静态车牌图片、视频模式三组复测。
+
+## 2026-08-23 图片结果快照与实际叠加帧对齐
+
+- 图片模式传给 Qt 的 `image_plate_results` 改为取当前显示线程实际送入叠加器的全部非空车牌
+  文字，而不是只传 GA 36 有效结果；未通过校验但已在画面显示的诊断文字同步使用
+  `RAW <类型>`，使结果表与同一 RGBA 帧上的可见车牌标签保持一致。
+- 视频模式原有单个有效车牌状态、Tracker 投票、图片 generation、推理频率和画面叠加逻辑
+  均保持不变；本次只调整图片模式的 Qt 结果快照语义。
+- 相关源码和记录已通过定向 `git diff --check`；当前 Windows 验证环境不能编译包含
+  `pthread/unistd` 的 PCIe 后端，仍需在既有 Linux/aarch64 环境完成整包交叉编译和板端复测。
+
+## 2026-08-21 答辩总体架构页美化方案启动
+
+- 已审计根目录 `答辩v6.pptx`：16:9、32 页，当前视觉身份以 `#0068E3`、浅蓝和深蓝灰为主，
+  中文主体字体为微软雅黑。已抽取源稿文字和图片清单，原始演示文稿未修改。
+- 本轮仅重构“总体架构设计”单页的信息层级与版式：保留顶部章节导航；将内容收束为
+  “HDMI 输入 → FPGA 流处理 → RK3568 智能识别 → UI 显示”的单向链路，并以简约、写实的
+  工程线条替代当前多重描边和分散箭头。最终配色与可编辑输出待方案确认后生成。
+- 已确认目标为第 5 页：FPGA 侧包含解码、可调预处理、FIFO、DMA 分包与 MWR 传输；RK3568
+  侧包含帧缓冲、RGA、YOLOv8n、ROI 裁剪与 PP-OCRv4。建议以四段横向流程和两段设备容器呈现，
+  仅保留一次 PCIe 跨域箭头，右侧成果图作为最终 UI 节点的真实输出证据。
+- 已收到生成确认并新建独立 Quick 工作区
+  `outputs/architecture-flow-slide_ppt169_20260821/`。输出保持为单页可编辑 PPTX；截图中的
+  顶部章节栏逐字保留，正文按单向工程数据流重绘，右侧使用项目既有的高清 UI 实拍作为成果图层。
+- 已完成单页交付：`FPGA` 与 `RK3568` 改为浅色设备边界，核心路径依次为 HDMI 输入、MS7200
+  解码、预处理/旁路、FIFO/DMA/MWR、PCIe、帧缓冲/RGA、YOLOv8n、ROI/PP-OCR 和 UI 显示。
+  导出文件为 `outputs/architecture-flow-slide_ppt169_20260821/exports/architecture-flow-slide_20260821_144957.pptx`。
+- QA：Quick SVG 质量检查无阻断错误，导出 postflight 为 `passed-with-warnings`（仅为多行文字框的
+  保守估算提示）；已用本地 PowerPoint 16.0 渲染为 PNG 目检，未见裁切、遮挡或空白图层。
+  最终文件为 1 页、8 个顶层可编辑对象，SHA-256 为
+  `A38E91B8EFEE2E92737341A8994AB1EEAD35BBF4177C4804115F8E51F6FC2241`。
+
 ## 2026-08-20 形成 OBB 训练、转换与部署综合报告
 
 - 新增 `YOLOV8_OBB_TRAINING_CONVERSION_DEPLOYMENT_REPORT_20260820.md`，以当前训练
@@ -455,3 +510,13 @@
 - 使用 Visual Studio 2022 x64 工具链重新编译并运行远程分支实际跟踪的
   `plate_rule_test`，结果为 `all cases passed (ga36_plate_type_v3)`；三个处理代码
   文件与 `origin/main` 的逐文件差异为零。
+
+## 2026-08-21 车牌叠加标签精简
+
+- 车牌叠加标签不再绘制置信度百分比，仅保留车牌号、类型与既有的 `RAW` 有效性标识；
+  标签缓存键同步移除置信度，避免同一文本因置信度变化重复生成精灵。
+- RGA/Qt 实时标签与直接图像绘制路径的字号统一上调：车牌号从 28 px 提至 32 px，
+  类型从 22 px 提至 26 px；小分辨率下原有最低 8 px 的自适应缩小逻辑保持不变。
+- 已通过源码检索和 `git diff --check` 验证：标签格式化字符串不再包含置信度百分比，两个
+  绘制路径均使用 32/26 px。当前 Windows 工作区没有 CMake、C/C++ 编译器或既有 CMake
+  构建目录，未执行交叉编译；需在 RK3568 的既有 Ubuntu 构建环境中完成最终运行验证。

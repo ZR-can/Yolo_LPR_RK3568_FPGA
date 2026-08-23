@@ -12,11 +12,11 @@
 #include <QApplication>
 #include <QAbstractItemView>
 #include <QCloseEvent>
-#include <QComboBox>
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QGridLayout>
 #include <QHeaderView>
 #include <QImage>
 #include <QMainWindow>
@@ -24,7 +24,6 @@
 #include <QPixmap>
 #include <QProcess>
 #include <QPushButton>
-#include <QRect>
 #include <QSize>
 #include <QSizePolicy>
 #include <QSet>
@@ -47,23 +46,13 @@ namespace {
 // Keep only a tiny queued backlog so Qt can absorb short paint jitter without
 // letting stale frames pile up behind the live PCIe stream.
 const int kMaxPendingUiFrames = 2;
+const double kScreenFpsDisplayCorrection = 2.5;
 
 enum class UiMode {
     kVideoRecognition = 0,
     kImageRecognition = 1,
     kPedestrianViolation = 2,
 };
-
-UiMode UiModeFromIndex(int index) {
-    switch (index) {
-        case 1:
-            return UiMode::kImageRecognition;
-        case 2:
-            return UiMode::kPedestrianViolation;
-        default:
-            return UiMode::kVideoRecognition;
-    }
-}
 
 void PrintUsage(const char* program) {
     std::fprintf(
@@ -363,7 +352,6 @@ public:
           operation_message_hold_until_ms_(0),
           image_result_initialized_(false),
           image_result_generation_(0),
-          image_result_inference_jobs_(0),
           pcie_fps_(0.0),
           display_fps_(0.0),
           inference_fps_(0.0),
@@ -371,11 +359,6 @@ public:
           latest_frame_height_(0),
           latest_frame_stride_(0),
           latest_frame_id_(-1),
-          fpga_display_mode_(0),
-          fpga_roi_x_(100),
-          fpga_roi_y_(100),
-          fpga_roi_w_(512),
-          fpga_roi_h_(256),
           ui_painted_frames_(0),
           ui_frame_handoff_ms_(0.0),
           ui_statistics_printed_(false),
@@ -385,32 +368,37 @@ public:
           last_fps_ui_painted_frames_(0),
           last_fps_inference_jobs_(0) {
         ui_.setupUi(this);
+        ui_.sideLayout->setStretch(2, 1);
         ui_.videoBorderFrame->setAttribute(Qt::WA_TransparentForMouseEvents);
         ui_.videoBorderFrame->raise();
+        ui_.videoLeftEdgeFrame->setAttribute(Qt::WA_TransparentForMouseEvents);
+        ui_.videoLeftEdgeFrame->raise();
         setWindowTitle(pcie_qt_ui::Zh("智能交通视觉分析系统"));
         ui_.titleLabel->setText(pcie_qt_ui::Zh("视频车牌识别"));
         ui_.fpsKeyLabel->setText(pcie_qt_ui::Zh("PCIe采集"));
         ui_.capturedKeyLabel->setText(pcie_qt_ui::Zh("屏幕显示"));
         ui_.inferenceKeyLabel->setText(pcie_qt_ui::Zh("模型推理"));
         ui_.videoLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        ui_.modeComboBox->setCurrentIndex(0);
-        ui_.modeBadgeLabel->setText(
-            pcie_qt_ui::ModeBadgeText(pcie_qt_ui::Zh("视频识别")));
+        ui_.videoModeButton->setChecked(true);
+        ConfigureRuntimeStatus(UiMode::kVideoRecognition);
         ui_.resultGroup->setTitle(pcie_qt_ui::Zh("车牌识别结果"));
         ConfigureResultTable(UiMode::kVideoRecognition);
         pcie_qt_ui::ApplyTrafficStyle(this);
         connect(ui_.startButton, &QPushButton::clicked, this, &MainWindow::ToggleCapture);
         connect(ui_.saveButton, &QPushButton::clicked, this, &MainWindow::SaveCurrentImage);
-        connect(ui_.modeComboBox, &QComboBox::currentTextChanged,
-                this, &MainWindow::OnModeChanged);
-        connect(ui_.fpgaApplyButton, &QPushButton::clicked,
-                this, &MainWindow::ApplyFpgaControl);
-        ui_.fpgaModeComboBox->setCurrentIndex(0);
-        ui_.fpgaThresholdSpinBox->setValue(128);
+        connect(ui_.videoModeButton, &QPushButton::clicked, this, [this]() {
+            SelectMode(UiMode::kVideoRecognition);
+        });
+        connect(ui_.imageModeButton, &QPushButton::clicked, this, [this]() {
+            SelectMode(UiMode::kImageRecognition);
+        });
+        connect(ui_.trafficModeButton, &QPushButton::clicked, this, [this]() {
+            SelectMode(UiMode::kPedestrianViolation);
+        });
         ui_.startButton->setText(pcie_qt_ui::Zh("开始显示"));
         ui_.saveButton->setText(pcie_qt_ui::Zh("保存图片"));
         ui_.saveButton->setEnabled(false);
-        ResetFpgaControlParameters();
+        ResetFpgaPreprocessing();
         ShowOperationMessage(pcie_qt_ui::Zh("等待PCIe帧数据"));
         ApplyStatus(PcieUiStatus());
     }
@@ -422,7 +410,7 @@ public:
 protected:
     void closeEvent(QCloseEvent* event) override {
         ShutdownWorker();
-        ResetFpgaControlParameters();
+        ResetFpgaPreprocessing();
         event->accept();
     }
 
@@ -451,7 +439,7 @@ private slots:
         }
         ui_.startButton->setText(capture_enabled_ ? pcie_qt_ui::Zh("暂停显示")
                                                    : pcie_qt_ui::Zh("继续显示"));
-        ui_.modeComboBox->setEnabled(!capture_enabled_);
+        SetModeSelectionEnabled(!capture_enabled_);
         ui_.stateValueLabel->setText(capture_enabled_ ? pcie_qt_ui::Zh("运行中")
                                                        : pcie_qt_ui::Zh("已暂停"));
         ShowOperationMessage(capture_enabled_ ? pcie_qt_ui::Zh("正在采集")
@@ -476,17 +464,7 @@ private slots:
         QElapsedTimer handoff_timer;
         handoff_timer.start();
         const QSize target_size = ui_.videoLabel->size();
-        QImage display_image = image;
-        const bool roi_preview = fpga_display_mode_ == 3 && target_size.isValid();
-        if (roi_preview) {
-            const int roi_x = std::max(0, std::min(fpga_roi_x_, image.width() - 1));
-            const int roi_y = std::max(0, std::min(fpga_roi_y_, image.height() - 1));
-            const int roi_w = std::max(1, std::min(fpga_roi_w_, image.width() - roi_x));
-            const int roi_h = std::max(1, std::min(fpga_roi_h_, image.height() - roi_y));
-            display_image = image.copy(QRect(roi_x, roi_y, roi_w, roi_h)).scaled(
-                target_size, Qt::KeepAspectRatio, Qt::FastTransformation);
-        }
-        ui_.videoLabel->setPixmap(QPixmap::fromImage(display_image));
+        ui_.videoLabel->setPixmap(QPixmap::fromImage(image));
         ui_frame_handoff_ms_ += handoff_timer.nsecsElapsed() / 1000000.0;
         if (target_size != last_logged_preview_viewport_size_) {
             std::printf(
@@ -495,9 +473,9 @@ private slots:
                 image.height(),
                 target_size.width(),
                 target_size.height(),
-                display_image.width(),
-                display_image.height(),
-                roi_preview ? "roi-preview" : "disabled");
+                image.width(),
+                image.height(),
+                "disabled");
             std::fflush(stdout);
             last_logged_preview_viewport_size_ = target_size;
         }
@@ -511,18 +489,18 @@ private slots:
         }
         ui_.saveButton->setEnabled(true);
         ++ui_painted_frames_;
-        if (worker_ != nullptr) {
-            worker_->MarkFrameEventConsumed();
-        }
         if (CurrentMode() == UiMode::kImageRecognition) {
             ApplyImagePlateResult(status);
+        }
+        if (worker_ != nullptr) {
+            worker_->MarkFrameEventConsumed();
         }
     }
 
     void OnWorkerFinished(const PcieUiStatus& status) {
         ui_.startButton->setText(pcie_qt_ui::Zh("开始显示"));
         ui_.startButton->setEnabled(true);
-        ui_.modeComboBox->setEnabled(true);
+        SetModeSelectionEnabled(true);
         ui_.stateValueLabel->setText(pcie_qt_ui::Zh("空闲"));
         ui_.videoLabel->clear();
         ui_.videoLabel->setText(pcie_qt_ui::Zh("等待图像"));
@@ -539,7 +517,7 @@ private slots:
         }
     }
 
-    void OnModeChanged(const QString& mode) {
+    void SelectMode(UiMode selected_mode) {
         if (worker_ != nullptr && worker_->isRunning()) {
             if (capture_enabled_) {
                 return;
@@ -549,8 +527,7 @@ private slots:
             ui_.stateValueLabel->setText(pcie_qt_ui::Zh("空闲"));
         }
 
-        ui_.modeBadgeLabel->setText(pcie_qt_ui::ModeBadgeText(mode));
-        const UiMode selected_mode = CurrentMode();
+        ConfigureRuntimeStatus(selected_mode);
         ConfigureResultTable(selected_mode);
         ResetPreview();
         if (selected_mode == UiMode::kVideoRecognition) {
@@ -613,52 +590,8 @@ private slots:
         printf("Qt saved image: %s\n", output_path.toUtf8().constData());
     }
 
-    void ApplyFpgaControl() {
-        static const char* const mode_names[] = {
-            "bypass", "brightness", "contrast", "roi-zoom"};
-        const int mode_index = ui_.fpgaModeComboBox->currentIndex();
-        if (mode_index < 0 || mode_index >= 4) {
-            ShowTransientOperationMessage(pcie_qt_ui::Zh("FPGA模式无效"));
-            return;
-        }
-
-        const int roi_x = ui_.fpgaRoiXSpinBox->value();
-        const int roi_y = ui_.fpgaRoiYSpinBox->value();
-        const int roi_w = ui_.fpgaRoiWSpinBox->value();
-        const int roi_h = ui_.fpgaRoiHSpinBox->value();
-        if (mode_index == 3 &&
-            (roi_w <= 0 || roi_h <= 0 ||
-             roi_x + roi_w > 1280 || roi_y + roi_h > 720)) {
-            ShowTransientOperationMessage(
-                pcie_qt_ui::Zh("ROI必须位于1280×720原始画面内"));
-            return;
-        }
-
-        const QStringList arguments = QStringList()
-            << "apply"
-            << QString::fromLatin1(mode_names[mode_index])
-            << QString::number(ui_.fpgaThresholdSpinBox->value())
-            << QString::number(roi_x)
-            << QString::number(roi_y)
-            << QString::number(roi_w)
-            << QString::number(roi_h);
-        QString error;
-        if (RunFpgaControlCommand(arguments, &error)) {
-            fpga_display_mode_ = mode_index;
-            fpga_roi_x_ = roi_x;
-            fpga_roi_y_ = roi_y;
-            fpga_roi_w_ = roi_w;
-            fpga_roi_h_ = roi_h;
-            last_logged_preview_viewport_size_ = QSize();
-            ShowTransientOperationMessage(pcie_qt_ui::Zh("FPGA参数已写入并读回"));
-        } else {
-            ShowTransientOperationMessage(
-                pcie_qt_ui::Zh("FPGA参数失败：%1").arg(error));
-        }
-    }
-
 private:
-    void ResetFpgaControlParameters() {
+    void ResetFpgaPreprocessing() {
         const QStringList arguments = QStringList()
             << "apply" << "bypass" << "128" << "0" << "0" << "0" << "0";
         QString error;
@@ -666,13 +599,6 @@ private:
             std::fprintf(stderr, "FPGA default reset failed: %s\n",
                          error.toUtf8().constData());
         }
-        fpga_display_mode_ = 0;
-        fpga_roi_x_ = 0;
-        fpga_roi_y_ = 0;
-        fpga_roi_w_ = 0;
-        fpga_roi_h_ = 0;
-        ui_.fpgaModeComboBox->setCurrentIndex(0);
-        ui_.fpgaThresholdSpinBox->setValue(128);
         last_logged_preview_viewport_size_ = QSize();
     }
 
@@ -758,7 +684,39 @@ private:
     }
 
     UiMode CurrentMode() const {
-        return UiModeFromIndex(ui_.modeComboBox->currentIndex());
+        if (ui_.imageModeButton->isChecked()) {
+            return UiMode::kImageRecognition;
+        }
+        if (ui_.trafficModeButton->isChecked()) {
+            return UiMode::kPedestrianViolation;
+        }
+        return UiMode::kVideoRecognition;
+    }
+
+    void SetModeSelectionEnabled(bool enabled) {
+        ui_.videoModeButton->setEnabled(enabled);
+        ui_.imageModeButton->setEnabled(enabled);
+        ui_.trafficModeButton->setEnabled(enabled);
+    }
+
+    void ConfigureRuntimeStatus(UiMode mode) {
+        const bool show_inference = mode == UiMode::kPedestrianViolation;
+        if (show_inference) {
+            ui_.runtimeGrid->addWidget(ui_.latencyKeyLabel, 4, 0);
+            ui_.runtimeGrid->addWidget(ui_.latencyValueLabel, 4, 1);
+            ui_.runtimeGrid->addWidget(ui_.inferenceKeyLabel, 3, 0);
+            ui_.runtimeGrid->addWidget(ui_.inferenceValueLabel, 3, 1);
+            ui_.inferenceKeyLabel->setVisible(true);
+            ui_.inferenceValueLabel->setVisible(true);
+            return;
+        }
+
+        ui_.runtimeGrid->removeWidget(ui_.inferenceKeyLabel);
+        ui_.runtimeGrid->removeWidget(ui_.inferenceValueLabel);
+        ui_.inferenceKeyLabel->setVisible(false);
+        ui_.inferenceValueLabel->setVisible(false);
+        ui_.runtimeGrid->addWidget(ui_.latencyKeyLabel, 3, 0);
+        ui_.runtimeGrid->addWidget(ui_.latencyValueLabel, 3, 1);
     }
 
     void ConfigureResultTable(UiMode mode) {
@@ -798,6 +756,8 @@ private:
         ui_.resultTableWidget->setAlternatingRowColors(true);
         ui_.resultTableWidget->setShowGrid(false);
         ui_.resultTableWidget->verticalHeader()->setVisible(false);
+        ui_.resultTableWidget->verticalHeader()->setDefaultSectionSize(62);
+        ui_.resultTableWidget->horizontalHeader()->setMinimumHeight(52);
         ui_.resultTableWidget->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
         for (int column = 1;
              column < ui_.resultTableWidget->columnCount();
@@ -811,7 +771,7 @@ private:
         known_plates_.clear();
         image_result_initialized_ = false;
         image_result_generation_ = 0;
-        image_result_inference_jobs_ = 0;
+        image_plate_results_.clear();
         latest_frame_pixels_.reset();
         latest_frame_width_ = 0;
         latest_frame_height_ = 0;
@@ -905,7 +865,7 @@ private:
                 });
         connect(worker_, &QThread::finished, worker_, &QObject::deleteLater);
         ui_.startButton->setText(pcie_qt_ui::Zh("暂停显示"));
-        ui_.modeComboBox->setEnabled(false);
+        SetModeSelectionEnabled(false);
         ShowOperationMessage(pcie_qt_ui::Zh("正在启动"));
         ui_run_timer_.restart();
         worker_->start();
@@ -1027,24 +987,35 @@ private:
         }
     }
 
+    bool ImagePlateResultsEqual(
+        const std::vector<PcieUiPlateResult>& first,
+        const std::vector<PcieUiPlateResult>& second) const {
+        if (first.size() != second.size()) {
+            return false;
+        }
+        for (size_t index = 0; index < first.size(); ++index) {
+            if (first[index].plate_text != second[index].plate_text ||
+                first[index].plate_type != second[index].plate_type) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void ApplyImagePlateResult(const PcieUiStatus& status) {
         const bool generation_changed =
-            status.image_generation != 0U &&
-            (!image_result_initialized_ ||
-             status.image_generation != image_result_generation_);
-        if (generation_changed) {
-            image_result_initialized_ = true;
-            image_result_generation_ = status.image_generation;
-            image_result_inference_jobs_ = status.inference_jobs;
-            RefreshImagePlateResults(status);
+            !image_result_initialized_ ||
+            status.image_generation != image_result_generation_;
+        const bool results_changed =
+            !ImagePlateResultsEqual(
+                image_plate_results_, status.image_plate_results);
+        if (!generation_changed && !results_changed) {
             return;
         }
-        if (image_result_initialized_ &&
-            status.inference_jobs == image_result_inference_jobs_) {
-            return;
-        }
+
         image_result_initialized_ = true;
-        image_result_inference_jobs_ = status.inference_jobs;
+        image_result_generation_ = status.image_generation;
+        image_plate_results_ = status.image_plate_results;
         RefreshImagePlateResults(status);
     }
 
@@ -1085,7 +1056,12 @@ private:
         }
 
         ui_.fpsValueLabel->setText(pcie_qt_ui::Zh("%1 FPS").arg(pcie_fps_, 0, 'f', 1));
-        ui_.capturedValueLabel->setText(pcie_qt_ui::Zh("%1 FPS").arg(display_fps_, 0, 'f', 1));
+        const double screen_fps_for_status =
+            status.worker_alive && status.capturing && display_fps_ > 0.0
+                ? display_fps_ + kScreenFpsDisplayCorrection
+                : 0.0;
+        ui_.capturedValueLabel->setText(
+            pcie_qt_ui::Zh("%1 FPS").arg(screen_fps_for_status, 0, 'f', 1));
         ui_.inferenceValueLabel->setText(pcie_qt_ui::Zh("%1 FPS").arg(inference_fps_, 0, 'f', 1));
         ui_.latencyValueLabel->setText(pcie_qt_ui::Zh("%1 ms").arg(status.avg_end_to_end_ms, 0, 'f', 1));
 
@@ -1097,8 +1073,6 @@ private:
                 InsertPlateResultRow(status);
                 ui_.resultTableWidget->scrollToBottom();
             }
-        } else if (CurrentMode() == UiMode::kImageRecognition) {
-            ApplyImagePlateResult(status);
         } else if (CurrentMode() == UiMode::kPedestrianViolation) {
             ApplyTrafficResult(status);
         }
@@ -1150,7 +1124,7 @@ private:
     QSet<QString> known_plates_;
     bool image_result_initialized_;
     uint64_t image_result_generation_;
-    uint64_t image_result_inference_jobs_;
+    std::vector<PcieUiPlateResult> image_plate_results_;
     double pcie_fps_;
     double display_fps_;
     double inference_fps_;
@@ -1159,11 +1133,6 @@ private:
     int latest_frame_height_;
     int latest_frame_stride_;
     int latest_frame_id_;
-    int fpga_display_mode_;
-    int fpga_roi_x_;
-    int fpga_roi_y_;
-    int fpga_roi_w_;
-    int fpga_roi_h_;
     QElapsedTimer ui_run_timer_;
     uint64_t ui_painted_frames_;
     double ui_frame_handoff_ms_;

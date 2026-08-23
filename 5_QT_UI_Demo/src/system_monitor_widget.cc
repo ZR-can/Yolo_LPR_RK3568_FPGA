@@ -255,7 +255,7 @@ void SystemMonitorWidget::paintEvent(QPaintEvent* event) {
     painter.setRenderHint(QPainter::Antialiasing, false);
 
     QFont text_font = painter.font();
-    text_font.setPixelSize(14);
+    text_font.setPixelSize(18);
     text_font.setBold(true);
     painter.setFont(text_font);
 
@@ -274,16 +274,16 @@ void SystemMonitorWidget::paintEvent(QPaintEvent* event) {
         const MetricHistory& metric = *metrics[metric_index];
         painter.setPen(QColor(QStringLiteral("#94a4b5")));
         painter.drawText(
-            metric_rect.adjusted(0, 0, 0, -metric_rect.height() + 24),
+            metric_rect.adjusted(0, 0, 0, -metric_rect.height() + 30),
             Qt::AlignLeft | Qt::AlignVCenter,
             metric.title);
         painter.setPen(metric.color);
         painter.drawText(
-            metric_rect.adjusted(0, 0, 0, -metric_rect.height() + 24),
+            metric_rect.adjusted(0, 0, 0, -metric_rect.height() + 30),
             Qt::AlignRight | Qt::AlignVCenter,
             MetricValueText(metric));
 
-        QRect chart_rect = metric_rect.adjusted(0, 28, 0, 0);
+        QRect chart_rect = metric_rect.adjusted(0, 36, 0, 0);
         painter.fillRect(chart_rect, QColor(QStringLiteral("#0e151d")));
         painter.setPen(QColor(QStringLiteral("#1d2a35")));
         for (int grid = 1; grid < 4; ++grid) {

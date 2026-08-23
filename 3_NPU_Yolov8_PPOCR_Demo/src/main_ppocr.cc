@@ -43,6 +43,12 @@ double ElapsedMilliseconds(const std::chrono::steady_clock::time_point& begin) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
 }
 
+double DurationMilliseconds(
+    const std::chrono::steady_clock::time_point& begin,
+    const std::chrono::steady_clock::time_point& end) {
+    return std::chrono::duration<double, std::milli>(end - begin).count();
+}
+
 void HandleSignal(int) {
     const int saved_errno = errno;
     g_should_stop = 1;
@@ -174,6 +180,24 @@ struct LatestPipelineResult {
     LatestPipelineResult() : frame_id(-1), image_generation(0) {}
 };
 
+struct TimingAccumulator {
+    uint64_t samples;
+    double total_ms;
+    double maximum_ms;
+
+    TimingAccumulator() : samples(0), total_ms(0.0), maximum_ms(0.0) {}
+
+    void Add(double duration_ms) {
+        ++samples;
+        total_ms += duration_ms;
+        maximum_ms = std::max(maximum_ms, duration_ms);
+    }
+
+    double Average() const {
+        return samples > 0U ? total_ms / static_cast<double>(samples) : 0.0;
+    }
+};
+
 struct PciePerformance {
     std::atomic<uint64_t> captured_frames;
     std::atomic<uint64_t> frame_pool_drops;
@@ -190,6 +214,9 @@ struct PciePerformance {
     double present_ms;
     double end_to_end_ms;
     double image_change_detection_ms;
+    TimingAccumulator successful_read_call;
+    TimingAccumulator complete_frame_interval;
+    TimingAccumulator image_detection_to_next_read;
     uint64_t tracker_result_lag_samples;
     uint64_t tracker_result_lag_frames;
     int tracker_max_result_lag_frames;
@@ -458,22 +485,26 @@ void DisplayThread(PcieAppContext* context, const PcieUiCallbacks* callbacks,
             float plate_confidence = 0.0f;
             std::vector<PcieUiPlateResult> image_plate_results;
             for (const PipelineResult& result : display_results) {
+                const float confidence =
+                    result.text_confidence > 0.0f
+                        ? result.text_confidence
+                        : result.confidence;
+                if (context->image_mode && !result.plate_name.empty()) {
+                    PcieUiPlateResult image_result;
+                    image_result.plate_text = result.plate_name;
+                    image_result.plate_type = result.has_valid_plate_text
+                                                  ? result.plate_type
+                                                  : (result.plate_type.empty()
+                                                         ? "RAW"
+                                                         : "RAW " + result.plate_type);
+                    image_result.plate_confidence = confidence;
+                    image_plate_results.push_back(image_result);
+                }
                 if (result.has_valid_plate_text && !result.plate_name.empty()) {
-                    const float confidence =
-                        result.text_confidence > 0.0f
-                            ? result.text_confidence
-                            : result.confidence;
                     if (plate_text.empty()) {
                         plate_text = result.plate_name;
                         plate_type = result.plate_type;
                         plate_confidence = confidence;
-                    }
-                    if (context->image_mode) {
-                        PcieUiPlateResult image_result;
-                        image_result.plate_text = result.plate_name;
-                        image_result.plate_type = result.plate_type;
-                        image_result.plate_confidence = confidence;
-                        image_plate_results.push_back(image_result);
                     }
                 }
             }
@@ -569,6 +600,25 @@ void PrintPerformance(const PcieAppContext& context, const PcieFrameSource& sour
            (unsigned long long)captured_frames,
            captured_frames / elapsed_seconds,
            (unsigned long long)frame_pool_drops);
+    if (context.performance.successful_read_call.samples > 0U) {
+        printf("Successful ReadFrame call average/max: %.3f / %.3f ms (samples=%llu)\n",
+               context.performance.successful_read_call.Average(),
+               context.performance.successful_read_call.maximum_ms,
+               (unsigned long long)context.performance.successful_read_call.samples);
+    }
+    if (context.performance.complete_frame_interval.samples > 0U) {
+        printf("Complete frame interval average/max: %.3f / %.3f ms (samples=%llu)\n",
+               context.performance.complete_frame_interval.Average(),
+               context.performance.complete_frame_interval.maximum_ms,
+               (unsigned long long)context.performance.complete_frame_interval.samples);
+    }
+    if (context.image_mode &&
+        context.performance.image_detection_to_next_read.samples > 0U) {
+        printf("Static detection-to-next-ReadFrame delay average/max: %.3f / %.3f ms (samples=%llu)\n",
+               context.performance.image_detection_to_next_read.Average(),
+               context.performance.image_detection_to_next_read.maximum_ms,
+               (unsigned long long)context.performance.image_detection_to_next_read.samples);
+    }
     printf("Display pipeline: %llu (%.2f fps)\n",
            (unsigned long long)display_pipeline_frames,
            display_pipeline_frames / elapsed_seconds);
@@ -748,6 +798,10 @@ static int RunPpocrPcieDemoInternal(const char* detector_model,
     uint64_t last_status_ms = start_ms;
     uint64_t last_retry_log_ms = start_ms;
     uint64_t last_image_generation = 0;
+    bool has_previous_complete_frame = false;
+    std::chrono::steady_clock::time_point previous_complete_frame;
+    bool has_static_detection_completion = false;
+    std::chrono::steady_clock::time_point static_detection_completion;
 
     printf("========== Capturing PCIe Frames ==========\n");
     while (!g_should_stop) {
@@ -760,8 +814,27 @@ static int RunPpocrPcieDemoInternal(const char* detector_model,
         std::shared_ptr<PcieFrame> frame = capture_enabled ? frame_pool.Acquire()
                                                            : std::shared_ptr<PcieFrame>();
         unsigned char* destination = frame ? frame->pixels.data() : drain_buffer.data();
+        const std::chrono::steady_clock::time_point read_begin =
+            std::chrono::steady_clock::now();
+        if (image_mode && has_static_detection_completion) {
+            context.performance.image_detection_to_next_read.Add(
+                DurationMilliseconds(static_detection_completion, read_begin));
+            has_static_detection_completion = false;
+        }
         const PcieFrameReadResult read_result =
             source.ReadFrame(destination, PcieFrameSource::kFrameBytes);
+        const std::chrono::steady_clock::time_point read_end =
+            std::chrono::steady_clock::now();
+        if (read_result == PCIE_FRAME_READY) {
+            context.performance.successful_read_call.Add(
+                DurationMilliseconds(read_begin, read_end));
+            if (has_previous_complete_frame) {
+                context.performance.complete_frame_interval.Add(
+                    DurationMilliseconds(previous_complete_frame, read_end));
+            }
+            previous_complete_frame = read_end;
+            has_previous_complete_frame = true;
+        }
         if (read_result == PCIE_FRAME_RETRY) {
             const uint64_t now_ms = NowMilliseconds();
             if (now_ms - last_retry_log_ms >= 2000U) {
@@ -829,8 +902,12 @@ static int RunPpocrPcieDemoInternal(const char* detector_model,
                     PcieFrameSource::kFrameWidth,
                     PcieFrameSource::kFrameHeight,
                     PcieFrameSource::kFrameWidth);
+            const std::chrono::steady_clock::time_point detection_end =
+                std::chrono::steady_clock::now();
             context.performance.image_change_detection_ms +=
-                ElapsedMilliseconds(detection_begin);
+                DurationMilliseconds(detection_begin, detection_end);
+            static_detection_completion = detection_end;
+            has_static_detection_completion = true;
             if (frame->image_generation != last_image_generation) {
                 printf("Static image generation: %llu (frame=%d)\n",
                        (unsigned long long)frame->image_generation,

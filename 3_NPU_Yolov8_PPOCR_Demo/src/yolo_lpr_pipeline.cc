@@ -104,19 +104,16 @@ void draw_pipeline_result_overlay(image_buffer_t* image, const PipelineResult& r
     draw_rectangle_alpha(image, left - 1, top - 1, box_w + 2, box_h + 2, COLOR_WHITE, 2, 255);
     draw_rectangle_alpha(image, left, top, box_w, box_h, COLOR_MAGENTA, 4, 255);
 
-    const int plate_font_px = 28;
-    const int meta_font_px = 22;
+    const int plate_font_px = 32;
+    const int meta_font_px = 26;
     const int pad_x = 8;
     const int pad_y = 4;
     const int text_gap = 10;
     const int box_gap = 4;
     const int panel_radius = 8;
 
-    char meta_buf[96];
-    snprintf(meta_buf, sizeof(meta_buf), "%s %.1f%%", result.plate_type.c_str(), result.confidence * 100.0f);
-
     std::string plate_text = result.plate_name.empty() ? "-" : result.plate_name;
-    std::string meta_text = meta_buf;
+    std::string meta_text = result.plate_type;
 
     int plate_w = measure_text_width_px(plate_text, plate_font_px);
     int meta_w = measure_text_width_px(meta_text, meta_font_px);

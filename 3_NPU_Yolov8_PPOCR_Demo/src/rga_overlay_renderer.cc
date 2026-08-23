@@ -1,7 +1,6 @@
 #include "rga_overlay_renderer.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -16,8 +15,8 @@ constexpr unsigned int kWhite = 0xFFFFFFFF;
 constexpr unsigned int kMagenta = 0xFFFF00FF;
 constexpr unsigned char kPanelAlpha = 190;
 constexpr unsigned char kPanelColor = 0x20;
-constexpr int kPlateFontPx = 28;
-constexpr int kMetaFontPx = 22;
+constexpr int kPlateFontPx = 32;
+constexpr int kMetaFontPx = 26;
 constexpr int kPanelRadius = 8;
 constexpr int kPadX = 8;
 constexpr int kPadY = 4;
@@ -295,10 +294,8 @@ int RgaOverlayRenderer::Init(int width, int height) {
 }
 
 const RgaOverlayRenderer::LabelSprite& RgaOverlayRenderer::GetLabelSprite(const PipelineResult& result) {
-    const int confidence_per_mille = static_cast<int>(std::lround(result.confidence * 1000.0f));
     const std::string key = result.plate_name + "\x1f" + result.plate_type +
-                            "\x1f" + (result.has_valid_plate_text ? "valid" : "raw") +
-                            "\x1f" + std::to_string(confidence_per_mille);
+                            "\x1f" + (result.has_valid_plate_text ? "valid" : "raw");
     const auto found = label_cache_.find(key);
     if (found != label_cache_.end()) {
         return found->second;
@@ -312,12 +309,8 @@ const RgaOverlayRenderer::LabelSprite& RgaOverlayRenderer::GetLabelSprite(const 
 
 RgaOverlayRenderer::LabelSprite RgaOverlayRenderer::BuildLabelSprite(const PipelineResult& result) const {
     char meta_buffer[96];
-    snprintf(meta_buffer,
-             sizeof(meta_buffer),
-             "%s%s %.1f%%",
-             result.has_valid_plate_text ? "" : "RAW ",
-             result.plate_type.c_str(),
-             result.confidence * 100.0f);
+    snprintf(meta_buffer, sizeof(meta_buffer), "%s%s",
+             result.has_valid_plate_text ? "" : "RAW ", result.plate_type.c_str());
     const std::string plate_text = result.plate_name.empty() ? "-" : result.plate_name;
     const std::string meta_text = meta_buffer;
 
