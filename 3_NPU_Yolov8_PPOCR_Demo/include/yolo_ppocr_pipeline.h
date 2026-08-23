@@ -13,6 +13,7 @@ struct YOLOPPOCRPipelineContext {
     uint64_t ppocr_primary_attempts;
     uint64_t ppocr_retry_attempts;
     uint64_t ppocr_retry_successes;
+    uint64_t ppocr_retry_stable_vote_suppressions;
     double ppocr_retry_ms;
 
     YOLOPPOCRPipelineContext()
@@ -21,6 +22,7 @@ struct YOLOPPOCRPipelineContext {
           ppocr_primary_attempts(0),
           ppocr_retry_attempts(0),
           ppocr_retry_successes(0),
+          ppocr_retry_stable_vote_suppressions(0),
           ppocr_retry_ms(0.0) {}
 };
 
@@ -44,7 +46,9 @@ int init_obb_ppocr_pipeline(const char* yolov8_obb_path,
 
 int process_obb_ppocr_pipeline(YOLOPPOCRPipelineContext* ctx,
                                image_buffer_t* source_image,
-                               std::vector<PipelineResult>& results);
+                               std::vector<PipelineResult>& results,
+                               const std::vector<PipelineResult>&
+                                   stable_retry_results);
 
 void release_obb_ppocr_pipeline(YOLOPPOCRPipelineContext* ctx);
 

@@ -120,7 +120,7 @@
                 </item>
                 <item row="4" column="0">
                  <widget class="QLabel" name="latencyKeyLabel">
-                  <property name="text"><string>端到端延迟</string></property>
+                  <property name="text"><string>画面显示耗时</string></property>
                  </widget>
                 </item>
                 <item row="4" column="1">

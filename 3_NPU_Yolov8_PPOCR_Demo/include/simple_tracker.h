@@ -108,6 +108,10 @@ struct TrackedPlate {
     // 全周期得分池；同一合法文本连续命中 min_hits_ 次后才允许进入。
     std::map<std::string, float> plate_votes;
 
+    // 图片模式独立计数池，只用于判断 retry 是否已有稳定多数结果；
+    // 不改变现有按检测置信度累计的显示投票结果。
+    std::map<std::string, int> static_plate_vote_counts;
+
     // 未通过 GA 36 校验的结果仅用于连续命中后的诊断显示，不进入有效投票池。
     std::string latest_plate_text;
     int latest_plate_hits = 0;
@@ -123,6 +127,7 @@ public:
     void predict(int frame_id,
                  std::vector<PipelineResult>& out_results,
                  bool static_image_mode = false) const;
+    std::vector<PipelineResult> stable_static_retry_results() const;
 
 private:
     bool is_valid_plate(const std::string& plate, const std::string& plate_type) const;
@@ -157,6 +162,7 @@ private:
     
     int max_age_frames_ = 8;    // 允许短检测空窗继续预测，约 4 个推理周期
     int min_hits_ = 2;          // 确认为有效目标所需的最少连续命中次数
+    int static_retry_min_votes_ = 3; // 图片 retry 至少三票且严格多数后才抑制
     float match_threshold_ = 0.30f; // 常规匹配阈值 (基于归一化 DIoU)
     float initial_match_threshold_ = 0.20f;
     float initial_match_min_size_ratio_ = 0.65f;

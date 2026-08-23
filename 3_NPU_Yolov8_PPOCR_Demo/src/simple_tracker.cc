@@ -683,6 +683,9 @@ void SimplePlateTracker::update(const std::vector<PipelineResult>& detections,
             if (tk.latest_plate_hits >= min_hits_ &&
                 is_valid_plate(det.plate_name, tk.plate_type)) {
                 tk.plate_votes[det.plate_name] += tk.confidence;
+                if (static_image_mode) {
+                    ++tk.static_plate_vote_counts[det.plate_name];
+                }
             }
         }
     }
@@ -716,6 +719,9 @@ void SimplePlateTracker::update(const std::vector<PipelineResult>& detections,
             if (new_tk.latest_plate_hits >= min_hits_ &&
                 is_valid_plate(det.plate_name, new_tk.plate_type)) {
                 new_tk.plate_votes[det.plate_name] += new_tk.confidence;
+                if (static_image_mode) {
+                    ++new_tk.static_plate_vote_counts[det.plate_name];
+                }
             }
             tracks_.push_back(new_tk);
         }
@@ -727,6 +733,43 @@ void SimplePlateTracker::update(const std::vector<PipelineResult>& detections,
             [this](const TrackedPlate& tk) { return tk.time_since_update > max_age_frames_; }),
             tracks_.end());
     }
+}
+
+std::vector<PipelineResult>
+SimplePlateTracker::stable_static_retry_results() const {
+    std::vector<PipelineResult> results;
+    for (const TrackedPlate& track : tracks_) {
+        int total_votes = 0;
+        int best_votes = 0;
+        std::string best_plate;
+        for (const auto& vote : track.static_plate_vote_counts) {
+            total_votes += vote.second;
+            if (vote.second > best_votes) {
+                best_votes = vote.second;
+                best_plate = vote.first;
+            }
+        }
+        if (best_votes < static_retry_min_votes_ ||
+            best_votes * 2 <= total_votes ||
+            get_best_voted_plate(track.plate_votes) != best_plate) {
+            continue;
+        }
+
+        PipelineResult result;
+        result.left = static_cast<int>(track.cx - track.w / 2.0f + 0.5f);
+        result.top = static_cast<int>(track.cy - track.h / 2.0f + 0.5f);
+        result.right = static_cast<int>(track.cx + track.w / 2.0f + 0.5f);
+        result.bottom = static_cast<int>(track.cy + track.h / 2.0f + 0.5f);
+        result.confidence = track.confidence;
+        result.text_confidence = track.text_confidence;
+        result.has_valid_plate_text = true;
+        result.plate_name = best_plate;
+        result.plate_type = track.plate_type;
+        result.box_color = track.box_color;
+        result.text_color = track.text_color;
+        results.push_back(result);
+    }
+    return results;
 }
 
 void SimplePlateTracker::predict(int frame_id,

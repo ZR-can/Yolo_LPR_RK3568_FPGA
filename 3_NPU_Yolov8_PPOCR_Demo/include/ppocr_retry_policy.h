@@ -2,8 +2,10 @@
 #define PPOCR_RETRY_POLICY_H
 
 #include <string>
+#include <vector>
 
 #include "common.h"
+#include "plate_pipeline_result.h"
 
 // ROI coordinates use half-open intervals: [left, right) and [top, bottom).
 image_rect_t clamp_ppocr_roi(const image_rect_t& roi,
@@ -21,5 +23,12 @@ bool ppocr_roi_equal(const image_rect_t& lhs, const image_rect_t& rhs);
 // The primary result is retried only when the current GA 36 v3 validator would
 // reject it. A valid primary result must never be replaced by the retry path.
 bool should_retry_ppocr_plate(const std::string& plate, bool is_green_plate);
+
+// Image mode only: once a static Tracker region has a stable majority vote,
+// an invalid primary OCR observation in the same region no longer needs the
+// expensive expanded-ROI retry. Other regions remain eligible for retry.
+bool should_suppress_static_image_retry(
+    const image_rect_t& roi,
+    const std::vector<PipelineResult>& stable_vote_results);
 
 #endif  // PPOCR_RETRY_POLICY_H

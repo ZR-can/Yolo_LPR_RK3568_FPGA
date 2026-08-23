@@ -180,6 +180,14 @@ struct LatestPipelineResult {
     LatestPipelineResult() : frame_id(-1), image_generation(0) {}
 };
 
+struct StaticImageRetryState {
+    uint64_t image_generation;
+    std::vector<PipelineResult> stable_results;
+    std::mutex mutex;
+
+    StaticImageRetryState() : image_generation(0) {}
+};
+
 struct TimingAccumulator {
     uint64_t samples;
     double total_ms;
@@ -254,6 +262,7 @@ struct PcieAppContext {
     LatestFrameQueue display_queue;
     LatestFrameQueue inference_queue;
     LatestPipelineResult latest_result;
+    StaticImageRetryState static_image_retry;
     PciePerformance performance;
 
     explicit PcieAppContext(bool use_image_mode)
@@ -295,6 +304,7 @@ std::vector<PipelineResult> BuildDisplayResults(PcieAppContext* context,
     std::vector<PipelineResult> current_results;
     int result_frame_id = -1;
     uint64_t result_image_generation = 0;
+    bool static_vote_state_changed = false;
     {
         std::lock_guard<std::mutex> lock(context->latest_result.mutex);
         current_results = context->latest_result.results;
@@ -307,6 +317,7 @@ std::vector<PipelineResult> BuildDisplayResults(PcieAppContext* context,
         context->tracker.reset();
         context->active_image_generation = display_image_generation;
         context->last_result_frame_id = -1;
+        static_vote_state_changed = true;
     }
 
     const bool result_matches_display_image =
@@ -330,6 +341,16 @@ std::vector<PipelineResult> BuildDisplayResults(PcieAppContext* context,
             current_results, result_frame_id, context->image_mode);
         context->last_result_frame_id = result_frame_id;
         context->performance.plate_results.fetch_add(current_results.size());
+        static_vote_state_changed = context->image_mode;
+    }
+
+    if (context->image_mode && static_vote_state_changed) {
+        std::vector<PipelineResult> stable_results =
+            context->tracker.stable_static_retry_results();
+        std::lock_guard<std::mutex> lock(context->static_image_retry.mutex);
+        context->static_image_retry.image_generation =
+            display_image_generation;
+        context->static_image_retry.stable_results.swap(stable_results);
     }
 
     std::vector<PipelineResult> tracked_results;
@@ -400,10 +421,23 @@ void InferenceThread(PcieAppContext* context) {
     while (context->inference_queue.WaitAndPop(&frame)) {
         image_buffer_t image = MakeBgr565Image(frame.get());
         std::vector<PipelineResult> results;
+        std::vector<PipelineResult> stable_retry_results;
+        if (context->image_mode) {
+            std::lock_guard<std::mutex> lock(
+                context->static_image_retry.mutex);
+            if (context->static_image_retry.image_generation ==
+                frame->image_generation) {
+                stable_retry_results =
+                    context->static_image_retry.stable_results;
+            }
+        }
         const std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
         const int ret = context->image_mode
                             ? process_obb_ppocr_pipeline(
-                                  &context->pipeline, &image, results)
+                                  &context->pipeline,
+                                  &image,
+                                  results,
+                                  stable_retry_results)
                             : process_ppocr_pipeline(
                                   &context->pipeline, &image, results);
         context->performance.inference_ms += ElapsedMilliseconds(begin);
@@ -662,6 +696,11 @@ void PrintPerformance(const PcieAppContext& context, const PcieFrameSource& sour
                    context.pipeline.ppocr_retry_attempts);
     }
     printf("\n");
+    if (context.image_mode) {
+        printf("Image retries suppressed by stable vote: %llu\n",
+               (unsigned long long)
+                   context.pipeline.ppocr_retry_stable_vote_suppressions);
+    }
     if (display_pipeline_frames > 0) {
         printf("Average display convert/overlay: %.2f / %.2f ms\n",
                context.performance.display_convert_ms / display_pipeline_frames,

@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "ppocr_retry_policy.h"
 
@@ -96,6 +97,40 @@ int main() {
     failures += CheckBool("green missing marker retries",
                           should_retry_ppocr_plate("粤A123456", true),
                           true);
+
+    PipelineResult stable_vote;
+    stable_vote.left = 100;
+    stable_vote.top = 200;
+    stable_vote.right = 200;
+    stable_vote.bottom = 240;
+    stable_vote.has_valid_plate_text = true;
+    stable_vote.plate_name = "京A12345";
+    stable_vote.plate_type = "蓝";
+    const std::vector<PipelineResult> stable_results(1, stable_vote);
+    const image_rect_t matching_roi = {105, 202, 198, 239};
+    const image_rect_t unrelated_roi = {400, 300, 500, 340};
+    failures += CheckBool(
+        "stable image region suppresses retry",
+        should_suppress_static_image_retry(
+            matching_roi, stable_results),
+        true);
+    failures += CheckBool(
+        "unrelated image region keeps retry",
+        should_suppress_static_image_retry(
+            unrelated_roi, stable_results),
+        false);
+    failures += CheckBool(
+        "empty stable image state keeps retry",
+        should_suppress_static_image_retry(
+            matching_roi, std::vector<PipelineResult>()),
+        false);
+    stable_vote.has_valid_plate_text = false;
+    failures += CheckBool(
+        "invalid tracker result keeps retry",
+        should_suppress_static_image_retry(
+            matching_roi,
+            std::vector<PipelineResult>(1, stable_vote)),
+        false);
 
     if (failures == 0) {
         std::printf("ppocr_retry_policy_test: all cases passed\n");

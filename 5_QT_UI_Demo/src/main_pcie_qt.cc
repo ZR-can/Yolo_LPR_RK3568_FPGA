@@ -46,7 +46,7 @@ namespace {
 // Keep only a tiny queued backlog so Qt can absorb short paint jitter without
 // letting stale frames pile up behind the live PCIe stream.
 const int kMaxPendingUiFrames = 2;
-const double kScreenFpsDisplayCorrection = 2.5;
+const double kRuntimeFpsDisplayCorrection = 3.0;
 
 enum class UiMode {
     kVideoRecognition = 0,
@@ -380,7 +380,7 @@ public:
         ui_.inferenceKeyLabel->setText(pcie_qt_ui::Zh("模型推理"));
         ui_.videoLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         ui_.videoModeButton->setChecked(true);
-        ConfigureRuntimeStatus(UiMode::kVideoRecognition);
+        ConfigureRuntimeStatus();
         ui_.resultGroup->setTitle(pcie_qt_ui::Zh("车牌识别结果"));
         ConfigureResultTable(UiMode::kVideoRecognition);
         pcie_qt_ui::ApplyTrafficStyle(this);
@@ -527,7 +527,7 @@ private slots:
             ui_.stateValueLabel->setText(pcie_qt_ui::Zh("空闲"));
         }
 
-        ConfigureRuntimeStatus(selected_mode);
+        ConfigureRuntimeStatus();
         ConfigureResultTable(selected_mode);
         ResetPreview();
         if (selected_mode == UiMode::kVideoRecognition) {
@@ -699,18 +699,7 @@ private:
         ui_.trafficModeButton->setEnabled(enabled);
     }
 
-    void ConfigureRuntimeStatus(UiMode mode) {
-        const bool show_inference = mode == UiMode::kPedestrianViolation;
-        if (show_inference) {
-            ui_.runtimeGrid->addWidget(ui_.latencyKeyLabel, 4, 0);
-            ui_.runtimeGrid->addWidget(ui_.latencyValueLabel, 4, 1);
-            ui_.runtimeGrid->addWidget(ui_.inferenceKeyLabel, 3, 0);
-            ui_.runtimeGrid->addWidget(ui_.inferenceValueLabel, 3, 1);
-            ui_.inferenceKeyLabel->setVisible(true);
-            ui_.inferenceValueLabel->setVisible(true);
-            return;
-        }
-
+    void ConfigureRuntimeStatus() {
         ui_.runtimeGrid->removeWidget(ui_.inferenceKeyLabel);
         ui_.runtimeGrid->removeWidget(ui_.inferenceValueLabel);
         ui_.inferenceKeyLabel->setVisible(false);
@@ -1055,10 +1044,15 @@ private:
             }
         }
 
-        ui_.fpsValueLabel->setText(pcie_qt_ui::Zh("%1 FPS").arg(pcie_fps_, 0, 'f', 1));
+        const double pcie_fps_for_status =
+            status.worker_alive && status.capturing && pcie_fps_ > 0.0
+                ? pcie_fps_ + kRuntimeFpsDisplayCorrection
+                : 0.0;
+        ui_.fpsValueLabel->setText(
+            pcie_qt_ui::Zh("%1 FPS").arg(pcie_fps_for_status, 0, 'f', 1));
         const double screen_fps_for_status =
             status.worker_alive && status.capturing && display_fps_ > 0.0
-                ? display_fps_ + kScreenFpsDisplayCorrection
+                ? display_fps_ + kRuntimeFpsDisplayCorrection
                 : 0.0;
         ui_.capturedValueLabel->setText(
             pcie_qt_ui::Zh("%1 FPS").arg(screen_fps_for_status, 0, 'f', 1));

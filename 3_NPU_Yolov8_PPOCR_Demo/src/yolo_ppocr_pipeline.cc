@@ -129,6 +129,7 @@ void ResetPipelineStats(YOLOPPOCRPipelineContext* ctx) {
     ctx->ppocr_primary_attempts = 0;
     ctx->ppocr_retry_attempts = 0;
     ctx->ppocr_retry_successes = 0;
+    ctx->ppocr_retry_stable_vote_suppressions = 0;
     ctx->ppocr_retry_ms = 0.0;
 }
 
@@ -504,7 +505,9 @@ int init_obb_ppocr_pipeline(const char* yolov8_obb_path,
 
 int process_obb_ppocr_pipeline(YOLOPPOCRPipelineContext* ctx,
                                image_buffer_t* source_image,
-                               std::vector<PipelineResult>& results) {
+                               std::vector<PipelineResult>& results,
+                               const std::vector<PipelineResult>&
+                                   stable_retry_results) {
     if (ctx == NULL || source_image == NULL || source_image->virt_addr == NULL ||
         source_image->width <= 0 || source_image->height <= 0) {
         return -1;
@@ -578,6 +581,7 @@ int process_obb_ppocr_pipeline(YOLOPPOCRPipelineContext* ctx,
             MakePlateDisplayStyle(plate, detection.class_id);
         bool retry_attempted = false;
         bool retry_accepted = false;
+        bool retry_suppressed = false;
         std::string retry_raw;
 
         // Keep the existing one-retry budget. The primary input is rotation
@@ -588,42 +592,48 @@ int process_obb_ppocr_pipeline(YOLOPPOCRPipelineContext* ctx,
             const image_rect_t retry_roi = expand_ppocr_retry_roi(
                 roi, source_image->width, source_image->height);
             if (!ppocr_roi_equal(roi, retry_roi)) {
-                retry_consumed = true;
-                retry_attempted = true;
-                ++ctx->ppocr_retry_attempts;
+                retry_suppressed = should_suppress_static_image_retry(
+                    roi, stable_retry_results);
+                if (retry_suppressed) {
+                    ++ctx->ppocr_retry_stable_vote_suppressions;
+                } else {
+                    retry_consumed = true;
+                    retry_attempted = true;
+                    ++ctx->ppocr_retry_attempts;
 
-                ppocr_rec_result_t retry_recognition;
-                ppocr_rec_perf_t retry_perf;
-                const std::chrono::steady_clock::time_point retry_start =
-                    std::chrono::steady_clock::now();
-                const int retry_ret = inference_ppocr_rec_model_roi(
-                    &ctx->ppocr_ctx,
-                    source_image,
-                    &retry_roi,
-                    &retry_recognition,
-                    &retry_perf);
-                const std::chrono::steady_clock::time_point retry_end =
-                    std::chrono::steady_clock::now();
-                ctx->ppocr_retry_ms +=
-                    std::chrono::duration<double, std::milli>(
-                        retry_end - retry_start)
-                        .count();
-                if (retry_ret == 0) {
-                    retry_raw = retry_recognition.text;
-                    const std::string retry_corrected =
-                        correct_plate_prediction_for_pipeline(
-                            retry_recognition.text, is_green_plate);
-                    const std::string retry_plate =
-                        truncate_plate_prediction(retry_corrected,
-                                                  is_green_plate);
-                    if (!should_retry_ppocr_plate(retry_plate,
-                                                  is_green_plate)) {
-                        recognition = retry_recognition;
-                        plate = retry_plate;
-                        style =
-                            MakePlateDisplayStyle(plate, detection.class_id);
-                        retry_accepted = true;
-                        ++ctx->ppocr_retry_successes;
+                    ppocr_rec_result_t retry_recognition;
+                    ppocr_rec_perf_t retry_perf;
+                    const std::chrono::steady_clock::time_point retry_start =
+                        std::chrono::steady_clock::now();
+                    const int retry_ret = inference_ppocr_rec_model_roi(
+                        &ctx->ppocr_ctx,
+                        source_image,
+                        &retry_roi,
+                        &retry_recognition,
+                        &retry_perf);
+                    const std::chrono::steady_clock::time_point retry_end =
+                        std::chrono::steady_clock::now();
+                    ctx->ppocr_retry_ms +=
+                        std::chrono::duration<double, std::milli>(
+                            retry_end - retry_start)
+                            .count();
+                    if (retry_ret == 0) {
+                        retry_raw = retry_recognition.text;
+                        const std::string retry_corrected =
+                            correct_plate_prediction_for_pipeline(
+                                retry_recognition.text, is_green_plate);
+                        const std::string retry_plate =
+                            truncate_plate_prediction(retry_corrected,
+                                                      is_green_plate);
+                        if (!should_retry_ppocr_plate(retry_plate,
+                                                      is_green_plate)) {
+                            recognition = retry_recognition;
+                            plate = retry_plate;
+                            style = MakePlateDisplayStyle(
+                                plate, detection.class_id);
+                            retry_accepted = true;
+                            ++ctx->ppocr_retry_successes;
+                        }
                     }
                 }
             }
@@ -648,7 +658,11 @@ int process_obb_ppocr_pipeline(YOLOPPOCRPipelineContext* ctx,
             recognition.score,
             retry_accepted
                 ? "accepted"
-                : (retry_attempted ? "rejected" : "not-needed"),
+                : (retry_attempted
+                       ? "rejected"
+                       : (retry_suppressed
+                              ? "suppressed-stable-vote"
+                              : "not-needed")),
             final_is_valid ? "valid" : "invalid");
 
         PipelineResult result;

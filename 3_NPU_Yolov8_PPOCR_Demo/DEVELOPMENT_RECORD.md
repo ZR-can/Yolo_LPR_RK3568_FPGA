@@ -1,5 +1,22 @@
 # 3_NPU_Yolov8_PPOCR_Demo 开发记录
 
+## 2026-08-23 图片模式按 generation 与稳定投票抑制 OCR retry
+
+- 仅修改图片 OBB 入口的 PP-OCR 回退决策；视频模式 `process_ppocr_pipeline()` 的主识别、
+  无效结果回退、单帧一次 retry 预算和统计口径保持原样。
+- 图片 Tracker 新增独立的 retry 判断计数，不改变现有按检测置信度累计的显示投票：同一轨迹的
+  候选至少获得 3 个有效计数、占全部有效计数的严格多数，且与当前显示投票赢家一致时，才发布
+  稳定区域。图片 generation 变化仍通过原 `tracker.reset()` 同步清空该状态。
+- 推理线程只对与稳定区域 IoU 不低于 0.50 的无效主 OCR 候选跳过扩框 retry；同一图片中其他
+  未稳定车牌仍保留回退，已抑制候选也不消耗该帧的一次 retry 预算。性能汇总新增
+  `Image retries suppressed by stable vote`，逐候选日志使用 `suppressed-stable-vote`。
+- `plate_rule_test` 新增三票门槛、generation reset 和视频模式隔离回归；
+  `ppocr_retry_policy_test` 新增同区域、不同区域、空状态及无效稳定项回归。
+- 两项测试均已用 Visual Studio 2022 x64 编译运行通过：
+  `plate_rule_test: all cases passed (ga36_plate_type_v3)`、
+  `ppocr_retry_policy_test: all cases passed`。OBB pipeline 的 Windows 对象编译仍受仓库现有
+  RKNN 头文件与 `ZERO_COPY` tensor memory 字段不一致限制；最终以 Linux/aarch64 构建为准。
+
 ## 2026-08-23 无驱动源码条件下的 read 路径确认
 
 - 当前 `pango_pci_driver.ko` 不是本项目自行编译，仓库、全部 Git 历史及本机相关资料均没有

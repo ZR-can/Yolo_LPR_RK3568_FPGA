@@ -181,6 +181,82 @@ int CheckImageSwitchResetDropsPreviousPlate() {
     return 1;
 }
 
+int CheckStaticImageStableRetryMajority() {
+    const PipelineResult detection =
+        MakeTrackerDetection("京A12345", 0.90f);
+    SimplePlateTracker tracker;
+    for (int observation = 0; observation < 3; ++observation) {
+        tracker.update(
+            std::vector<PipelineResult>(1, detection),
+            observation,
+            true);
+    }
+    if (!tracker.stable_static_retry_results().empty()) {
+        std::fprintf(
+            stderr,
+            "static retry majority failed: stabilized before three votes\n");
+        return 1;
+    }
+
+    tracker.update(std::vector<PipelineResult>(1, detection), 3, true);
+    const std::vector<PipelineResult> stable =
+        tracker.stable_static_retry_results();
+    if (stable.size() != 1U ||
+        stable[0].plate_name != detection.plate_name ||
+        !stable[0].has_valid_plate_text) {
+        std::fprintf(
+            stderr,
+            "static retry majority failed: expected one stable valid result\n");
+        return 1;
+    }
+
+    tracker.reset();
+    if (!tracker.stable_static_retry_results().empty()) {
+        std::fprintf(
+            stderr,
+            "static retry majority failed: generation reset kept votes\n");
+        return 1;
+    }
+
+    SimplePlateTracker video_tracker;
+    for (int observation = 0; observation < 4; ++observation) {
+        video_tracker.update(
+            std::vector<PipelineResult>(1, detection),
+            observation,
+            false);
+    }
+    if (!video_tracker.stable_static_retry_results().empty()) {
+        std::fprintf(
+            stderr,
+            "static retry majority failed: video mode populated image-only votes\n");
+        return 1;
+    }
+
+    SimplePlateTracker tied_tracker;
+    const PipelineResult alternate =
+        MakeTrackerDetection("京B12345", 0.90f);
+    for (int observation = 0; observation < 4; ++observation) {
+        tied_tracker.update(
+            std::vector<PipelineResult>(1, detection),
+            observation,
+            true);
+    }
+    for (int observation = 0; observation < 4; ++observation) {
+        tied_tracker.update(
+            std::vector<PipelineResult>(1, alternate),
+            observation + 4,
+            true);
+    }
+    if (tied_tracker.stable_static_retry_results().empty()) {
+        return 0;
+    }
+
+    std::fprintf(
+        stderr,
+        "static retry majority failed: tied votes were treated as stable\n");
+    return 1;
+}
+
 }  // namespace
 
 int main() {
@@ -307,6 +383,7 @@ int main() {
                                        "蓝");
     failures += CheckTrackerRejectsTransientValidPlate();
     failures += CheckImageSwitchResetDropsPreviousPlate();
+    failures += CheckStaticImageStableRetryMajority();
     failures += CheckTrackerVote("ordinary sequence O rejected",
                                  "京AA12O3",
                                  "蓝",

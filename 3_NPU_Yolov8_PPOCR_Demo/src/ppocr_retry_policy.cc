@@ -8,6 +8,28 @@
 namespace {
 
 const double kRetryExpansionRatio = 0.05;
+const float kStableVoteOverlapThreshold = 0.50f;
+
+float RectIou(const image_rect_t& first, const PipelineResult& second) {
+    const int left = std::max(first.left, second.left);
+    const int top = std::max(first.top, second.top);
+    const int right = std::min(first.right, second.right);
+    const int bottom = std::min(first.bottom, second.bottom);
+    if (right <= left || bottom <= top) {
+        return 0.0f;
+    }
+
+    const float intersection = static_cast<float>(
+        (right - left) * (bottom - top));
+    const float first_area = static_cast<float>(
+        std::max(0, first.right - first.left) *
+        std::max(0, first.bottom - first.top));
+    const float second_area = static_cast<float>(
+        std::max(0, second.right - second.left) *
+        std::max(0, second.bottom - second.top));
+    const float union_area = first_area + second_area - intersection;
+    return union_area > 0.0f ? intersection / union_area : 0.0f;
+}
 
 }  // namespace
 
@@ -58,4 +80,16 @@ bool ppocr_roi_equal(const image_rect_t& lhs, const image_rect_t& rhs) {
 bool should_retry_ppocr_plate(const std::string& plate,
                               bool is_green_plate) {
     return !is_valid_ga36_plate(plate, is_green_plate ? "绿" : "蓝");
+}
+
+bool should_suppress_static_image_retry(
+    const image_rect_t& roi,
+    const std::vector<PipelineResult>& stable_vote_results) {
+    for (const PipelineResult& stable : stable_vote_results) {
+        if (stable.has_valid_plate_text &&
+            RectIou(roi, stable) >= kStableVoteOverlapThreshold) {
+            return true;
+        }
+    }
+    return false;
 }
